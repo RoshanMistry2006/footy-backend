@@ -17,6 +17,7 @@ const cron = require('node-cron');
 // ===== Routes =====
 const questionRoutes = require('./routes/questions');
 const answerRoutes = require('./routes/answers');
+const commentsRoutes = require('./routes/comments'); // ✅ NEW
 const { verifyAuth } = require('./verifyAuth');
 
 // ===== App + Server =====
@@ -26,28 +27,48 @@ const server = http.createServer(app);
 // ===== Socket.IO =====
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',') : '*',
+    origin: process.env.CORS_ORIGIN
+      ? process.env.CORS_ORIGIN.split(',')
+      : '*',
     methods: ['GET', 'POST', 'DELETE', 'PATCH'],
   },
 });
 
 app.set('io', io);
-io.on('connection', (socket) => {
-  console.log('Socket connected:', socket.id);
 
+// ===== SOCKET LOGIC =====
+io.on('connection', (socket) => {
+  console.log('⚡ Socket connected:', socket.id);
+
+  // Join a specific day’s room
   socket.on('join-day', (date) => {
     socket.join(date);
-    console.log(`Socket ${socket.id} joined room ${date}`);
+    console.log(`📅 ${socket.id} joined room for ${date}`);
   });
 
+  // Join an answer’s discussion thread
+  socket.on('join-answer', (answerId) => {
+    socket.join(`answer:${answerId}`);
+    console.log(`💬 ${socket.id} joined thread for answer ${answerId}`);
+  });
+
+  // Leave a specific answer thread
+  socket.on('leave-answer', (answerId) => {
+    socket.leave(`answer:${answerId}`);
+    console.log(`🚪 ${socket.id} left thread for answer ${answerId}`);
+  });
+
+  // Handle disconnect
   socket.on('disconnect', () => {
-    console.log('Socket disconnected:', socket.id);
-  });
-  
-  socket.on('day:rotated', (data) => {
-    console.log(`🌙 Day rotation event received! Closed: ${data.closed}, Opened: ${data.opened}`);
+    console.log('❌ Socket disconnected:', socket.id);
   });
 
+  // Day rotation event (for cron)
+  socket.on('day:rotated', (data) => {
+    console.log(
+      `🌙 Day rotation event received! Closed: ${data.closed}, Opened: ${data.opened}`
+    );
+  });
 });
 
 // ===== Middleware =====
@@ -55,14 +76,22 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===== API routes =====
+// ===== API ROUTES =====
 app.use('/api/questions', questionRoutes);
 app.use('/api/answers', answerRoutes);
+app.use(
+  '/api/questions/:date/answers/:answerId/comments',
+  (req, _res, next) => {
+    req.io = io; // inject socket.io instance for comments
+    next();
+  },
+  commentsRoutes
+);
 
 // ===== Simple health check =====
 app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
-// ===== Cron job: compute winner + rotate question =====
+// ===== CRON JOB =====
 const db = admin.firestore();
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '59 23 * * *'; // 23:59 daily
 
@@ -88,7 +117,9 @@ cron.schedule(CRON_SCHEDULE, async () => {
       .orderBy('votes', 'desc')
       .limit(1)
       .get();
-    const winner = snap.empty ? null : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    const winner = snap.empty
+      ? null
+      : { id: snap.docs[0].id, ...snap.docs[0].data() };
 
     await qRef.set(
       {
@@ -129,7 +160,6 @@ cron.schedule(CRON_SCHEDULE, async () => {
     } else {
       console.log(`[CRON] No question scheduled for tomorrow (${tomorrow})`);
     }
-
   } catch (err) {
     console.error('[CRON] Rotation failed:', err.message);
   }
