@@ -9,7 +9,7 @@ const db = admin.firestore();
  */
 router.post("/request", async (req, res) => {
   try {
-    const { toUid, topic } = req.body;
+    const { toUid, topic, commentText } = req.body; // ✅ now also includes challenged comment
     const fromUid = req.user.uid;
 
     if (!toUid || !topic) {
@@ -28,12 +28,19 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ error: "Request already sent." });
     }
 
+    // ✅ Get display name or email of sender
+    const fromUser = await admin.auth().getUser(fromUid);
+    const fromDisplayName =
+      fromUser.displayName || fromUser.email || "Anonymous";
+
     const ref = db.collection("chatRequests").doc();
     await ref.set({
       id: ref.id,
       fromUid,
+      fromDisplayName, // ✅ name shown instead of UID
       toUid,
       topic,
+      commentText: commentText || "", // ✅ challenged comment
       status: "pending",
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
@@ -42,8 +49,10 @@ router.post("/request", async (req, res) => {
     req.io.to(toUid).emit("chat:request", {
       id: ref.id,
       fromUid,
+      fromDisplayName,
       toUid,
       topic,
+      commentText: commentText || "",
       status: "pending",
     });
 
@@ -90,6 +99,7 @@ router.post("/respond", async (req, res) => {
         userA: data.fromUid,
         userB: data.toUid,
         topic: data.topic,
+        commentText: data.commentText || "",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -97,15 +107,20 @@ router.post("/respond", async (req, res) => {
       req.io.to(data.fromUid).emit("chat:accepted", {
         chatId: chatRef.id,
         topic: data.topic,
+        commentText: data.commentText || "",
         opponent: uid,
       });
       req.io.to(data.toUid).emit("chat:accepted", {
         chatId: chatRef.id,
         topic: data.topic,
+        commentText: data.commentText || "",
         opponent: data.fromUid,
       });
 
-      return res.json({ message: "Request accepted.", chatId: chatRef.id });
+      return res.json({
+        message: "Request accepted.",
+        chatId: chatRef.id,
+      });
     }
 
     res.status(400).json({ error: "Invalid action." });
@@ -135,7 +150,6 @@ router.get("/requests", async (req, res) => {
       ...d.data(),
     }));
 
-    // ✅ Always return an array
     return res.json(Array.isArray(requests) ? requests : []);
   } catch (err) {
     console.error("🔥 Error in GET /requests:", err);
@@ -170,9 +184,7 @@ router.post("/:chatId/messages", async (req, res) => {
 
     await msgRef.set(msgData);
 
-    // notify both users
     req.io.to(chatId).emit("chat:message", msgData);
-
     res.status(201).json(msgData);
   } catch (err) {
     console.error("🔥 Error in POST /:chatId/messages:", err);
