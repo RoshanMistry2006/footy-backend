@@ -17,7 +17,8 @@ const cron = require('node-cron');
 // ===== Routes =====
 const questionRoutes = require('./routes/questions');
 const answerRoutes = require('./routes/answers');
-const commentsRoutes = require('./routes/comments'); // ✅ NEW
+const commentsRoutes = require('./routes/comments');
+const chatRoutes = require('./routes/chat'); // ✅ Debate chats
 const { verifyAuth } = require('./verifyAuth');
 
 // ===== App + Server =====
@@ -40,34 +41,43 @@ app.set('io', io);
 io.on('connection', (socket) => {
   console.log('⚡ Socket connected:', socket.id);
 
-  // Join a specific day’s room
+  // 🔐 Store userId if passed via query
+  const userId = socket.handshake.query.tokenUid;
+  if (userId) {
+    socket.join(userId);
+    console.log(`👤 User ${userId} joined personal socket room`);
+  }
+
+  // --- Question Rooms ---
   socket.on('join-day', (date) => {
     socket.join(date);
     console.log(`📅 ${socket.id} joined room for ${date}`);
   });
 
-  // Join an answer’s discussion thread
+  // --- Answer Discussion Threads ---
   socket.on('join-answer', (answerId) => {
     socket.join(`answer:${answerId}`);
     console.log(`💬 ${socket.id} joined thread for answer ${answerId}`);
   });
 
-  // Leave a specific answer thread
   socket.on('leave-answer', (answerId) => {
     socket.leave(`answer:${answerId}`);
     console.log(`🚪 ${socket.id} left thread for answer ${answerId}`);
   });
 
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    console.log('❌ Socket disconnected:', socket.id);
+  // --- Private Debate Chats ---
+  socket.on('join-chat', (chatId) => {
+    socket.join(chatId);
+    console.log(`🗨️ ${socket.id} joined chat room ${chatId}`);
   });
 
-  // Day rotation event (for cron)
-  socket.on('day:rotated', (data) => {
-    console.log(
-      `🌙 Day rotation event received! Closed: ${data.closed}, Opened: ${data.opened}`
-    );
+  socket.on('leave-chat', (chatId) => {
+    socket.leave(chatId);
+    console.log(`🚶 ${socket.id} left chat room ${chatId}`);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('❌ Socket disconnected:', socket.id);
   });
 });
 
@@ -76,20 +86,27 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ===== Inject io globally for authenticated routes =====
+app.use((req, _res, next) => {
+  req.io = io;
+  next();
+});
+
 // ===== API ROUTES =====
 app.use('/api/questions', questionRoutes);
 app.use('/api/answers', answerRoutes);
 app.use(
   '/api/questions/:date/answers/:answerId/comments',
-  (req, _res, next) => {
-    req.io = io; // inject socket.io instance for comments
-    next();
-  },
   commentsRoutes
 );
 
+// ✅ Debate Chat Routes (with verifyAuth for security)
+app.use('/api/chats', verifyAuth, chatRoutes);
+
 // ===== Simple health check =====
-app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+app.get('/health', (_req, res) =>
+  res.json({ ok: true, ts: Date.now() })
+);
 
 // ===== CRON JOB =====
 const db = admin.firestore();
@@ -117,6 +134,7 @@ cron.schedule(CRON_SCHEDULE, async () => {
       .orderBy('votes', 'desc')
       .limit(1)
       .get();
+
     const winner = snap.empty
       ? null
       : { id: snap.docs[0].id, ...snap.docs[0].data() };
@@ -170,3 +188,4 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 });
+

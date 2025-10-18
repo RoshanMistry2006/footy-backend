@@ -13,6 +13,7 @@ const db = admin.firestore();
  */
 
 // ===== CREATE a comment or reply =====
+// ===== CREATE a comment or reply =====
 router.post('/', verifyAuth, async (req, res) => {
   try {
     const { date, answerId } = req.params;
@@ -23,11 +24,18 @@ router.post('/', verifyAuth, async (req, res) => {
     }
 
     const user = req.user;
+    let displayName = 'Anonymous';
+
+    // ✅ Fetch displayName from Firestore users collection
+    const userDoc = await db.collection('users').doc(user.uid).get();
+    if (userDoc.exists) {
+      displayName = userDoc.data().displayName || 'Anonymous';
+    }
+
     const comment = {
-      id: null, // will fill in later
       text: text.trim(),
       userId: user.uid,
-      displayName: user.name || user.email || 'Anonymous',
+      displayName, // ✅ now uses the Firestore username
       parentId: parentId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -40,22 +48,21 @@ router.post('/', verifyAuth, async (req, res) => {
       .collection('comments')
       .doc();
 
-    comment.id = ref.id;
-
     await ref.set(comment);
 
-    // ✅ Broadcast the new comment to others in this thread
-    const io = req.app.get('io');
-    if (io) {
-      io.to(`answer:${answerId}`).emit('comment:created', comment);
+    const saved = { id: ref.id, ...comment };
+
+    if (req.io) {
+      req.io.to(`answer:${answerId}`).emit('comment:created', saved);
     }
 
-    return res.status(201).json(comment);
+    return res.status(201).json(saved);
   } catch (err) {
     console.error('[POST /comments] Error:', err);
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // ===== GET all comments (flat or threaded) =====
 router.get('/', async (req, res) => {
