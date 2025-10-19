@@ -2,6 +2,14 @@ const express = require("express");
 const router = express.Router();
 const admin = require("firebase-admin");
 const db = admin.firestore();
+const bannedWords = require("../utils/bannedWords"); // ✅ import banned words
+
+// ===== Helper function to detect banned words =====
+function containsBannedWord(text) {
+  return bannedWords.some((word) =>
+    text.toLowerCase().includes(word.toLowerCase())
+  );
+}
 
 /**
  * POST /api/chats/request
@@ -9,14 +17,26 @@ const db = admin.firestore();
  */
 router.post("/request", async (req, res) => {
   try {
-    const { toUid, topic, commentText } = req.body; // ✅ now also includes challenged comment
+    const { toUid, topic, commentText } = req.body;
     const fromUid = req.user.uid;
 
     if (!toUid || !topic) {
       return res.status(400).json({ error: "Missing fields." });
     }
 
-    // Prevent duplicate pending requests between same users
+    // Fetch sender’s display name
+    const fromUserSnap = await db.collection("users").doc(fromUid).get();
+    const fromDisplayName = fromUserSnap.exists
+      ? fromUserSnap.data().displayName || "Unknown"
+      : "Unknown";
+
+    // Fetch recipient’s display name
+    const toUserSnap = await db.collection("users").doc(toUid).get();
+    const toDisplayName = toUserSnap.exists
+      ? toUserSnap.data().displayName || "Unknown"
+      : "Unknown";
+
+    // Prevent duplicate pending requests
     const existing = await db
       .collection("chatRequests")
       .where("fromUid", "==", fromUid)
@@ -28,37 +48,54 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ error: "Request already sent." });
     }
 
-    // ✅ Get display name or email of sender
-    const fromUser = await admin.auth().getUser(fromUid);
-    const fromDisplayName =
-      fromUser.displayName || fromUser.email || "Anonymous";
-
     const ref = db.collection("chatRequests").doc();
-    await ref.set({
-      id: ref.id,
-      fromUid,
-      fromDisplayName, // ✅ name shown instead of UID
-      toUid,
-      topic,
-      commentText: commentText || "", // ✅ challenged comment
-      status: "pending",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // 🔥 Notify target via socket
-    req.io.to(toUid).emit("chat:request", {
+    const data = {
       id: ref.id,
       fromUid,
       fromDisplayName,
       toUid,
+      toDisplayName,
       topic,
       commentText: commentText || "",
       status: "pending",
-    });
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await ref.set(data);
+
+    // 🔥 Notify target via socket
+    req.io.to(toUid).emit("chat:request", data);
 
     res.status(201).json({ id: ref.id, message: "Request sent." });
   } catch (err) {
     console.error("🔥 Error in POST /request:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/chats/requests
+ * Fetch all debate requests for the logged-in user
+ */
+router.get("/requests", async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    if (!uid) return res.status(400).json({ error: "Missing user UID" });
+
+    const snap = await db
+      .collection("chatRequests")
+      .where("toUid", "==", uid)
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const requests = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    res.json(requests);
+  } catch (err) {
+    console.error("🔥 Error in GET /requests:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -69,7 +106,7 @@ router.post("/request", async (req, res) => {
  */
 router.post("/respond", async (req, res) => {
   try {
-    const { requestId, action } = req.body; // "accept" or "decline"
+    const { requestId, action } = req.body;
     const uid = req.user.uid;
 
     const ref = db.collection("chatRequests").doc(requestId);
@@ -131,33 +168,6 @@ router.post("/respond", async (req, res) => {
 });
 
 /**
- * GET /api/chats/requests
- * Fetch all debate requests for the logged-in user
- */
-router.get("/requests", async (req, res) => {
-  try {
-    const uid = req.user.uid;
-    if (!uid) return res.status(400).json({ error: "Missing user UID" });
-
-    const snap = await db
-      .collection("chatRequests")
-      .where("toUid", "==", uid)
-      .orderBy("createdAt", "desc")
-      .get();
-
-    const requests = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
-    return res.json(Array.isArray(requests) ? requests : []);
-  } catch (err) {
-    console.error("🔥 Error in GET /requests:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/**
  * POST /api/chats/:chatId/messages
  * Send a message
  */
@@ -169,6 +179,13 @@ router.post("/:chatId/messages", async (req, res) => {
 
     if (!text?.trim())
       return res.status(400).json({ error: "Empty message." });
+
+    // ✅ Check for banned words before saving
+    if (containsBannedWord(text)) {
+      return res.status(400).json({
+        error: "Your message contains banned words and cannot be sent.",
+      });
+    }
 
     const msgRef = db
       .collection("chats")
@@ -183,7 +200,6 @@ router.post("/:chatId/messages", async (req, res) => {
     };
 
     await msgRef.set(msgData);
-
     req.io.to(chatId).emit("chat:message", msgData);
     res.status(201).json(msgData);
   } catch (err) {
@@ -215,4 +231,3 @@ router.get("/:chatId/messages", async (req, res) => {
 });
 
 module.exports = router;
-

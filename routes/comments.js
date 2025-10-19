@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router({ mergeParams: true });
 const admin = require('firebase-admin');
 const { verifyAuth } = require('../verifyAuth');
+const bannedWords = require('../utils/bannedWords'); // ✅ import banned words
 
 const db = admin.firestore();
 
@@ -12,7 +13,13 @@ const db = admin.firestore();
  * Each comment has: text, userId, displayName, parentId, createdAt
  */
 
-// ===== CREATE a comment or reply =====
+// ===== Helper function to detect banned words =====
+function containsBannedWord(text) {
+  return bannedWords.some((word) =>
+    text.toLowerCase().includes(word.toLowerCase())
+  );
+}
+
 // ===== CREATE a comment or reply =====
 router.post('/', verifyAuth, async (req, res) => {
   try {
@@ -21,6 +28,13 @@ router.post('/', verifyAuth, async (req, res) => {
 
     if (!text || !text.trim()) {
       return res.status(400).json({ error: 'Text is required' });
+    }
+
+    // ✅ Check for banned words before saving
+    if (containsBannedWord(text)) {
+      return res.status(400).json({
+        error: 'Your comment contains banned words and cannot be posted.',
+      });
     }
 
     const user = req.user;
@@ -52,6 +66,7 @@ router.post('/', verifyAuth, async (req, res) => {
 
     const saved = { id: ref.id, ...comment };
 
+    // ✅ Emit new comment event
     if (req.io) {
       req.io.to(`answer:${answerId}`).emit('comment:created', saved);
     }
@@ -62,7 +77,6 @@ router.post('/', verifyAuth, async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-
 
 // ===== GET all comments (flat or threaded) =====
 router.get('/', async (req, res) => {
@@ -112,6 +126,7 @@ router.delete('/:commentId', verifyAuth, async (req, res) => {
 
     await ref.delete();
 
+    // ✅ Emit deleted comment event
     const io = req.io;
     if (io) {
       io.to(`answer:${answerId}`).emit('comment:deleted', { id: commentId });
@@ -125,3 +140,4 @@ router.delete('/:commentId', verifyAuth, async (req, res) => {
 });
 
 module.exports = router;
+
