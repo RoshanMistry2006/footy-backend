@@ -49,10 +49,13 @@ router.post('/', verifyAuth, async (req, res) => {
     const comment = {
       text: text.trim(),
       userId: user.uid,
-      displayName, // ✅ now uses the Firestore username
+      displayName, // ✅ now uses Firestore username
       parentId: parentId || null,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      isPremium: false,   // ✅ default field
+      premiumStyle: {},   // ✅ default field
     };
+
 
     const ref = db
       .collection('questions')
@@ -75,7 +78,10 @@ router.post('/', verifyAuth, async (req, res) => {
   } catch (err) {
     console.error('[POST /comments] Error:', err);
     return res.status(500).json({ error: err.message });
+
+    
   }
+
 });
 
 // ===== GET all comments (flat or threaded) =====

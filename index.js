@@ -19,7 +19,9 @@ const questionRoutes = require('./routes/questions');
 const answerRoutes = require('./routes/answers');
 const commentsRoutes = require('./routes/comments');
 const chatRoutes = require('./routes/chat'); // ✅ Debate chats
+const premiumRoutes = require("./routes/premium");
 const { verifyAuth } = require('./verifyAuth');
+
 
 // ===== App + Server =====
 const app = express();
@@ -106,6 +108,10 @@ app.use(
 
 // ✅ Debate Chat Routes (with verifyAuth for security)
 app.use('/api/chats', verifyAuth, chatRoutes);
+
+
+app.use("/api/premium", premiumRoutes);
+
 
 // ===== Simple health check =====
 app.get('/health', (_req, res) =>
