@@ -3,40 +3,40 @@ const express = require("express");
 const router = express.Router();
 const admin = require("firebase-admin");
 const db = admin.firestore();
+const { io } = require("../socket"); // adjust path if needed
+
 
 // ✅ Activate premium design after payment
-router.post("/activate", async (req, res) => {
+router.post("/activate", verifyAuth, async (req, res) => {
+  const { answerId, style } = req.body;
+  const uid = req.user.uid;
+
+  if (!answerId || !style)
+    return res.status(400).json({ error: "Missing fields" });
+
   try {
-    const { commentId, style } = req.body;
-    const uid = req.user.uid;
+    const answerRef = db.collection("answers").doc(answerId);
+    const doc = await answerRef.get();
 
-    if (!commentId || !style) {
-      return res.status(400).json({ error: "Missing fields." });
-    }
+    if (!doc.exists)
+      return res.status(404).json({ error: "Answer not found" });
 
-    // 🧠 Find comment by ID (you can improve this later by storing path)
-    const commentsSnap = await db.collectionGroup("comments")
-      .where("id", "==", commentId)
-      .limit(1)
-      .get();
+    if (doc.data().uid !== uid)
+      return res.status(403).json({ error: "Unauthorized" });
 
-    if (commentsSnap.empty) {
-      return res.status(404).json({ error: "Comment not found." });
-    }
-
-    const commentRef = commentsSnap.docs[0].ref;
-
-    await commentRef.update({
+    await answerRef.update({
       isPremium: true,
       premiumStyle: style,
-      premiumActivatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
-    return res.json({ success: true });
+    // ✅ emit live update via Socket.IO
+    req.io.emit("premiumUpdated", { answerId, style });
+
+    res.json({ success: true });
   } catch (err) {
-    console.error("🔥 Premium activation error:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 module.exports = router;
