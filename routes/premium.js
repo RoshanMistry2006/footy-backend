@@ -3,26 +3,31 @@ const express = require("express");
 const router = express.Router();
 const admin = require("firebase-admin");
 const db = admin.firestore();
-const { verifyAuth } = require("../verifyAuth"); // ✅ make sure this line exists
+const { verifyAuth } = require("../verifyAuth");
 
-// ✅ Activate premium design after payment
+// ✅ Activate premium design for an answer
 router.post("/activate", verifyAuth, async (req, res) => {
-  const { answerId, style } = req.body;
+  const { answerId, style, date } = req.body; // ✅ include date from frontend
   const uid = req.user.uid;
 
-  if (!answerId || !style) {
+  if (!answerId || !style || !date) {
     return res.status(400).json({ error: "Missing fields" });
   }
 
   try {
-    const answerRef = db.collection("answers").doc(answerId);
+    const answerRef = db
+      .collection("questions")
+      .doc(date)
+      .collection("answers")
+      .doc(answerId);
+
     const doc = await answerRef.get();
 
     if (!doc.exists) {
       return res.status(404).json({ error: "Answer not found" });
     }
 
-    if (doc.data().uid !== uid) {
+    if (doc.data().userId !== uid) {
       return res.status(403).json({ error: "Unauthorized" });
     }
 
@@ -31,13 +36,8 @@ router.post("/activate", verifyAuth, async (req, res) => {
       premiumStyle: style,
     });
 
-    // ✅ broadcast to all connected clients (real-time update)
-    if (req.io) {
-      req.io.emit("premiumUpdated", { answerId, style });
-      console.log("📡 premiumUpdated event emitted:", answerId);
-    } else {
-      console.warn("⚠️ req.io not found — Socket.IO event not emitted");
-    }
+    // ✅ broadcast real-time update
+    if (req.io) req.io.emit("premiumUpdated", { answerId, style, date });
 
     res.json({ success: true });
   } catch (err) {
@@ -47,4 +47,5 @@ router.post("/activate", verifyAuth, async (req, res) => {
 });
 
 module.exports = router;
+
 
