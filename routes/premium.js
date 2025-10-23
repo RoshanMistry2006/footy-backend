@@ -7,7 +7,7 @@ const { verifyAuth } = require("../verifyAuth");
 
 // ✅ Activate premium design for an answer
 router.post("/activate", verifyAuth, async (req, res) => {
-  const { answerId, style, date } = req.body; // ✅ include date from frontend
+  const { answerId, style, date } = req.body; // ✅ include date
   const uid = req.user.uid;
 
   if (!answerId || !style || !date) {
