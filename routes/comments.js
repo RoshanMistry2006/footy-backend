@@ -46,16 +46,36 @@ router.post('/', verifyAuth, async (req, res) => {
       displayName = userDoc.data().displayName || 'Anonymous';
     }
 
+    // ✅ Calculate depth
+    let depth = 0;
+    if (parentId) {
+      // Look up parent comment
+      const parentRef = db
+        .collection('questions')
+        .doc(date)
+        .collection('answers')
+        .doc(answerId)
+        .collection('comments')
+        .doc(parentId);
+
+      const parentDoc = await parentRef.get();
+      if (parentDoc.exists) {
+        const parentData = parentDoc.data();
+        depth = (parentData.depth || 0) + 1;
+      }
+    }
+
+    // ✅ Build comment object
     const comment = {
       text: text.trim(),
       userId: user.uid,
-      displayName, // ✅ now uses Firestore username
+      displayName,
       parentId: parentId || null,
+      depth, // ✅ new field
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      isPremium: false,   // ✅ default field
-      premiumStyle: {},   // ✅ default field
+      isPremium: false,
+      premiumStyle: {},
     };
-
 
     const ref = db
       .collection('questions')
@@ -78,11 +98,9 @@ router.post('/', verifyAuth, async (req, res) => {
   } catch (err) {
     console.error('[POST /comments] Error:', err);
     return res.status(500).json({ error: err.message });
-
-    
   }
-
 });
+
 
 // ===== GET all comments (flat or threaded) =====
 router.get('/', async (req, res) => {
