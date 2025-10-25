@@ -89,23 +89,7 @@ router.post('/', verifyAuth, async (req, res) => {
 
     await commentRef.set(comment);
 
-    // ✅ Increment user's totalComments if top-level comment
-    if (!parentId) {
-      console.log(`🟢 Top-level comment by ${displayName} (${user.uid})`);
-      const userRef = db.collection('users').doc(user.uid);
 
-      await db.runTransaction(async (t) => {
-        const userSnap = await t.get(userRef);
-        const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
-        t.set(
-          userRef,
-          { totalComments: prev + 1 },
-          { merge: true }
-        );
-      });
-    } else {
-      console.log(`🟡 Reply (depth ${depth}) by ${displayName} (${user.uid}) — counter unchanged`);
-    }
 
     const saved = { id: commentRef.id, ...comment };
 

@@ -149,6 +149,57 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
   }
 });
 
+// ✅ POST /api/questions/:date/comments → comment directly on the daily question
+router.post('/:date/comments', verifyAuth, async (req, res) => {
+  try {
+    const { date } = req.params;
+    const { text } = req.body;
+    const user = req.user;
+
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: "Comment text is required." });
+    }
+
+    const qRef = db.collection('questions').doc(date);
+    const commentRef = qRef.collection('comments').doc();
+
+    const comment = {
+      id: commentRef.id,
+      text: text.trim(),
+      userId: user.uid,
+      displayName: user.displayName || "Anonymous",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // ✅ Save comment
+    await commentRef.set(comment);
+
+    // ✅ Increment user's totalComments counter
+    const userRef = db.collection('users').doc(user.uid);
+    await db.runTransaction(async (t) => {
+      const userSnap = await t.get(userRef);
+      const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
+      t.set(
+        userRef,
+        { totalComments: prev + 1 },
+        { merge: true }
+      );
+    });
+    console.log(`🧩 totalComments incremented for ${user.uid} (daily question comment)`);
+
+    // ✅ Notify sockets
+    const io = req.app.get("io");
+    if (io) io.to(date).emit("question:commented", comment);
+
+    res.status(201).json(comment);
+  } catch (err) {
+    console.error("Error posting comment on daily question:", err);
+    res
+      .status(err.status || 500)
+      .json({ error: err.message || "Failed to post comment." });
+  }
+});
+
 // POST /api/questions/:date   (seed/update a question)
 router.post('/:date', async (req, res) => {
   try {
@@ -349,3 +400,4 @@ router.post('/:date/compute-winner', verifyAuth, requireAdmin, async (req, res) 
 });
 
 module.exports = router;
+
