@@ -136,6 +136,15 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
 
     await aRef.set(newAnswer);
 
+    // ✅ Increment totalComments (since "answers" = "daily comments" in your app)
+    const userRef = db.collection('users').doc(uid);
+    await db.runTransaction(async (t) => {
+      const userSnap = await t.get(userRef);
+      const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
+      t.set(userRef, { totalComments: prev + 1 }, { merge: true });
+    });
+    console.log(`🧩 totalComments incremented for ${uid} (new daily answer)`);
+
     // ✅ Notify sockets
     const io = req.app.get('io');
     if (io) io.to(date).emit('answer:created', newAnswer);
