@@ -149,6 +149,29 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
   }
 });
 
+// ✅ GET /api/questions/:date/comments → fetch all main question comments
+router.get('/:date/comments', async (req, res) => {
+  try {
+    const { date } = req.params;
+    const snap = await db
+      .collection('questions')
+      .doc(date)
+      .collection('comments')
+      .orderBy('createdAt', 'asc')
+      .get();
+
+    const comments = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    res.json(comments);
+  } catch (err) {
+    console.error('Error fetching question comments:', err);
+    res.status(500).json({ error: 'Failed to load comments.' });
+  }
+});
+
 // ✅ POST /api/questions/:date/comments → comment directly on the daily question
 router.post('/:date/comments', verifyAuth, async (req, res) => {
   try {
@@ -179,11 +202,7 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
     await db.runTransaction(async (t) => {
       const userSnap = await t.get(userRef);
       const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
-      t.set(
-        userRef,
-        { totalComments: prev + 1 },
-        { merge: true }
-      );
+      t.set(userRef, { totalComments: prev + 1 }, { merge: true });
     });
     console.log(`🧩 totalComments incremented for ${user.uid} (daily question comment)`);
 
@@ -370,7 +389,7 @@ router.post('/:date/compute-winner', verifyAuth, requireAdmin, async (req, res) 
               id: winner.id,
               text: winner.text || '',
               userId: winner.userId || null,
-              displayName, // ✅ new field
+              displayName,
               votes: winner.votes || 0,
               computedAt: admin.firestore.FieldValue.serverTimestamp(),
               payoutStatus: 'pending',
