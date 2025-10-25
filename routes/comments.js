@@ -3,14 +3,14 @@ const express = require('express');
 const router = express.Router({ mergeParams: true });
 const admin = require('firebase-admin');
 const { verifyAuth } = require('../verifyAuth');
-const bannedWords = require('../utils/bannedWords'); // ✅ import banned words
+const bannedWords = require('../utils/bannedWords');
 
 const db = admin.firestore();
 
 /**
  * Firestore layout:
  * questions/{date}/answers/{answerId}/comments/{commentId}
- * Each comment has: text, userId, displayName, parentId, createdAt
+ * Each comment has: text, userId, displayName, parentId, createdAt, depth
  */
 
 // ===== Helper function to detect banned words =====
@@ -30,7 +30,7 @@ router.post('/', verifyAuth, async (req, res) => {
       return res.status(400).json({ error: 'Text is required' });
     }
 
-    // ✅ Check for banned words before saving
+    // ✅ Check for banned words
     if (containsBannedWord(text)) {
       return res.status(400).json({
         error: 'Your comment contains banned words and cannot be posted.',
@@ -40,13 +40,13 @@ router.post('/', verifyAuth, async (req, res) => {
     const user = req.user;
     let displayName = 'Anonymous';
 
-    // ✅ Fetch displayName from Firestore users collection
+    // ✅ Get display name from Firestore
     const userDoc = await db.collection('users').doc(user.uid).get();
     if (userDoc.exists) {
       displayName = userDoc.data().displayName || 'Anonymous';
     }
 
-    // ✅ Calculate depth
+    // ✅ Compute depth
     let depth = 0;
     if (parentId) {
       const parentRef = db
@@ -76,8 +76,8 @@ router.post('/', verifyAuth, async (req, res) => {
       premiumStyle: {},
     };
 
-    // ✅ Save comment
-    const ref = db
+    // ✅ Save comment in Firestore
+    const commentRef = db
       .collection('questions')
       .doc(date)
       .collection('answers')
@@ -85,25 +85,29 @@ router.post('/', verifyAuth, async (req, res) => {
       .collection('comments')
       .doc();
 
-    await ref.set(comment);
+    await commentRef.set(comment);
 
     // ✅ Increment user's totalComments if top-level comment
     if (!parentId) {
+      console.log(`🟢 Top-level comment by ${displayName} (${user.uid})`);
       const userRef = db.collection('users').doc(user.uid);
+
       await db.runTransaction(async (t) => {
-        const doc = await t.get(userRef);
-        const prev = (doc.data()?.totalComments || 0);
+        const userSnap = await t.get(userRef);
+        const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
         t.set(
           userRef,
           { totalComments: prev + 1 },
           { merge: true }
         );
       });
+    } else {
+      console.log(`🟡 Reply (depth ${depth}) by ${displayName} (${user.uid}) — counter unchanged`);
     }
 
-    const saved = { id: ref.id, ...comment };
+    const saved = { id: commentRef.id, ...comment };
 
-    // ✅ Emit new comment event
+    // ✅ Emit new comment via Socket.IO
     if (req.io) {
       req.io.to(`answer:${answerId}`).emit('comment:created', saved);
     }
@@ -115,12 +119,10 @@ router.post('/', verifyAuth, async (req, res) => {
   }
 });
 
-
-// ===== GET all comments (flat or threaded) =====
+// ===== GET all comments =====
 router.get('/', async (req, res) => {
   try {
     const { date, answerId } = req.params;
-
     const snap = await db
       .collection('questions')
       .doc(date)
@@ -138,7 +140,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ===== DELETE comment (author or admin) =====
+// ===== DELETE a comment =====
 router.delete('/:commentId', verifyAuth, async (req, res) => {
   try {
     const { date, answerId, commentId } = req.params;
@@ -164,11 +166,12 @@ router.delete('/:commentId', verifyAuth, async (req, res) => {
 
     await ref.delete();
 
-    // ✅ Emit deleted comment event
-    const io = req.io;
-    if (io) {
-      io.to(`answer:${answerId}`).emit('comment:deleted', { id: commentId });
+    // ✅ Emit delete event
+    if (req.io) {
+      req.io.to(`answer:${answerId}`).emit('comment:deleted', { id: commentId });
     }
+
+    console.log(`🗑️ Comment deleted by ${user.uid}`);
 
     return res.json({ success: true });
   } catch (err) {
