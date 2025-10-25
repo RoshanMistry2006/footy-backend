@@ -49,7 +49,6 @@ router.post('/', verifyAuth, async (req, res) => {
     // ✅ Calculate depth
     let depth = 0;
     if (parentId) {
-      // Look up parent comment
       const parentRef = db
         .collection('questions')
         .doc(date)
@@ -71,12 +70,13 @@ router.post('/', verifyAuth, async (req, res) => {
       userId: user.uid,
       displayName,
       parentId: parentId || null,
-      depth, // ✅ new field
+      depth,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       isPremium: false,
       premiumStyle: {},
     };
 
+    // ✅ Save comment
     const ref = db
       .collection('questions')
       .doc(date)
@@ -86,6 +86,20 @@ router.post('/', verifyAuth, async (req, res) => {
       .doc();
 
     await ref.set(comment);
+
+    // ✅ Increment user's totalComments if top-level comment
+    if (!parentId) {
+      const userRef = db.collection('users').doc(user.uid);
+      await db.runTransaction(async (t) => {
+        const doc = await t.get(userRef);
+        const prev = (doc.data()?.totalComments || 0);
+        t.set(
+          userRef,
+          { totalComments: prev + 1 },
+          { merge: true }
+        );
+      });
+    }
 
     const saved = { id: ref.id, ...comment };
 
