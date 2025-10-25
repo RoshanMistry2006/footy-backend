@@ -7,6 +7,8 @@ const bannedWords = require('../utils/bannedWords');
 
 const db = admin.firestore();
 
+console.log("✅ comments.js loaded successfully on server startup");
+
 /**
  * Firestore layout:
  * questions/{date}/answers/{answerId}/comments/{commentId}
