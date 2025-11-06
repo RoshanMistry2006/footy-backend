@@ -63,8 +63,18 @@ router.post("/request", async (req, res) => {
 
     await ref.set(data);
 
-    // 🔥 Notify target via socket
-    req.io.to(toUid).emit("chat:request", data);
+    // 🔥 Notify target via socket (for chatRequests page + red badge)
+    const io = req.app.get("io");
+    if (io) {
+      io.to(toUid).emit("chat:request", data); // already used in your app
+      io.to(toUid).emit("challenge:received", {
+        type: "newChallenge",
+        fromUid,
+        fromDisplayName,
+        topic,
+        commentText: commentText || "",
+      }); // ✅ triggers red notification badge on frontend
+    }
 
     res.status(201).json({ id: ref.id, message: "Request sent." });
   } catch (err) {
