@@ -5,6 +5,7 @@ const { verifyAuth } = require('../verifyAuth');
 const { requireAdmin } = require('../requireAdmin');
 
 const db = admin.firestore();
+const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";
 
 // ---------- helpers ----------
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -49,21 +50,17 @@ router.get('/:date', async (req, res) => {
     assertDate(date);
 
     const doc = await db.collection('questions').doc(date).get();
-    if (!doc.exists) {
+    if (!doc.exists)
       return res.status(404).json({ error: 'No question found for this date.' });
-    }
 
     const data = doc.data();
     if (data.time && data.time.toDate) {
       data.time = data.time.toDate().toISOString();
     }
-
     res.json(data);
   } catch (err) {
     console.error('Error fetching question by date:', err);
-    res
-      .status(err.status || 500)
-      .json({ error: err.message || 'Error fetching question.' });
+    res.status(err.status || 500).json({ error: err.message || 'Error fetching question.' });
   }
 });
 
@@ -84,9 +81,7 @@ router.get('/:date/answers', async (req, res) => {
     res.json({ count: answers.length, answers });
   } catch (err) {
     console.error(err);
-    res
-      .status(err.status || 500)
-      .json({ error: err.message || 'Error fetching answers.' });
+    res.status(err.status || 500).json({ error: err.message || 'Error fetching answers.' });
   }
 });
 
@@ -100,30 +95,23 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
     const uid = req.user?.uid || null;
     const displayName = req.user?.displayName || 'Anonymous';
 
-    if (!text || !text.trim()) {
+    if (!text || !text.trim())
       return res.status(400).json({ error: 'Answer text is required.' });
-    }
 
     const qRef = db.collection('questions').doc(date);
     const qDoc = await qRef.get();
-    if (!qDoc.exists) {
+    if (!qDoc.exists)
       return res.status(404).json({ error: 'Question not found for this date.' });
-    }
 
-    // ✅ Check if this user already answered
-    const answersSnap = await qRef
-      .collection('answers')
+    // ✅ Prevent multiple answers per user
+    const answersSnap = await qRef.collection('answers')
       .where('userId', '==', uid)
       .limit(1)
       .get();
 
-    if (!answersSnap.empty) {
-      return res
-        .status(403)
-        .json({ error: 'You have already submitted an answer for today.' });
-    }
+    if (!answersSnap.empty)
+      return res.status(403).json({ error: 'You have already submitted an answer for today.' });
 
-    // ✅ Create new answer
     const aRef = qRef.collection('answers').doc();
     const newAnswer = {
       id: aRef.id,
@@ -136,61 +124,33 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
 
     await aRef.set(newAnswer);
 
-    // ✅ Increment totalComments (since "answers" = "daily comments" in your app)
+    // ✅ Increment user’s totalComments counter
     const userRef = db.collection('users').doc(uid);
     await db.runTransaction(async (t) => {
       const userSnap = await t.get(userRef);
       const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
       t.set(userRef, { totalComments: prev + 1 }, { merge: true });
     });
-    console.log(`🧩 totalComments incremented for ${uid} (new daily answer)`);
 
-    // ✅ Notify sockets
     const io = req.app.get('io');
     if (io) io.to(date).emit('answer:created', newAnswer);
 
     res.status(201).json(newAnswer);
   } catch (err) {
     console.error('Error creating answer:', err);
-    res
-      .status(err.status || 500)
-      .json({ error: err.message || 'Failed to create answer.' });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to create answer.' });
   }
 });
 
-// ✅ GET /api/questions/:date/comments → fetch all main question comments
-router.get('/:date/comments', async (req, res) => {
-  try {
-    const { date } = req.params;
-    const snap = await db
-      .collection('questions')
-      .doc(date)
-      .collection('comments')
-      .orderBy('createdAt', 'asc')
-      .get();
-
-    const comments = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
-    res.json(comments);
-  } catch (err) {
-    console.error('Error fetching question comments:', err);
-    res.status(500).json({ error: 'Failed to load comments.' });
-  }
-});
-
-// ✅ POST /api/questions/:date/comments → comment directly on the daily question
+// ✅ POST /api/questions/:date/comments
 router.post('/:date/comments', verifyAuth, async (req, res) => {
   try {
     const { date } = req.params;
     const { text } = req.body;
     const user = req.user;
 
-    if (!text || !text.trim()) {
-      return res.status(400).json({ error: "Comment text is required." });
-    }
+    if (!text || !text.trim())
+      return res.status(400).json({ error: 'Comment text is required.' });
 
     const qRef = db.collection('questions').doc(date);
     const commentRef = qRef.collection('comments').doc();
@@ -199,60 +159,31 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
       id: commentRef.id,
       text: text.trim(),
       userId: user.uid,
-      displayName: user.displayName || "Anonymous",
+      displayName: user.displayName || 'Anonymous',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    // ✅ Save comment
     await commentRef.set(comment);
 
-    // ✅ Increment user's totalComments counter
+    // Increment user’s totalComments
     const userRef = db.collection('users').doc(user.uid);
     await db.runTransaction(async (t) => {
-      const userSnap = await t.get(userRef);
-      const prev = userSnap.exists ? userSnap.data().totalComments || 0 : 0;
+      const snap = await t.get(userRef);
+      const prev = snap.exists ? snap.data().totalComments || 0 : 0;
       t.set(userRef, { totalComments: prev + 1 }, { merge: true });
     });
-    console.log(`🧩 totalComments incremented for ${user.uid} (daily question comment)`);
 
-    // ✅ Notify sockets
-    const io = req.app.get("io");
-    if (io) io.to(date).emit("question:commented", comment);
+    const io = req.app.get('io');
+    if (io) io.to(date).emit('question:commented', comment);
 
     res.status(201).json(comment);
   } catch (err) {
-    console.error("Error posting comment on daily question:", err);
-    res
-      .status(err.status || 500)
-      .json({ error: err.message || "Failed to post comment." });
+    console.error('Error posting comment on daily question:', err);
+    res.status(err.status || 500).json({ error: err.message || 'Failed to post comment.' });
   }
 });
 
-// POST /api/questions/:date   (seed/update a question)
-router.post('/:date', async (req, res) => {
-  try {
-    const { date } = req.params;
-    assertDate(date);
-
-    const { text, closesAt } = req.body || {};
-    if (!text) return res.status(400).json({ error: 'text is required' });
-
-    const data = { text };
-    if (closesAt) {
-      data.closesAt = admin.firestore.Timestamp.fromDate(new Date(closesAt));
-    }
-
-    await db.collection('questions').doc(date).set(data, { merge: true });
-    res.status(201).json({ message: 'Question saved.' });
-  } catch (e) {
-    console.error(e);
-    res
-      .status(e.status || 500)
-      .json({ error: e.message || 'Failed to save question.' });
-  }
-});
-
-// POST /api/questions/:date/answers/:answerId/vote
+// ✅ Voting route
 router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   const { date, answerId } = req.params;
   const uid = req.user.uid;
@@ -265,41 +196,19 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
     await db.runTransaction(async (tx) => {
       const qRef = db.collection('questions').doc(date);
       const qDoc = await tx.get(qRef);
-      if (!qDoc.exists) {
-        const e = new Error('Question not found');
-        e.status = 404;
-        throw e;
-      }
-      if (!isVotingOpen(qDoc)) {
-        const e = new Error('Voting closed');
-        e.status = 403;
-        throw e;
-      }
+      if (!qDoc.exists) throw new Error('Question not found');
+      if (!isVotingOpen(qDoc)) throw new Error('Voting closed');
 
       const aRef = qRef.collection('answers').doc(answerId);
       const aDoc = await tx.get(aRef);
-      if (!aDoc.exists) {
-        const e = new Error('Answer not found');
-        e.status = 404;
-        throw e;
-      }
-
-      if (aDoc.get('userId') === uid) {
-        const e = new Error('Cannot vote your own answer');
-        e.status = 403;
-        throw e;
-      }
+      if (!aDoc.exists) throw new Error('Answer not found');
+      if (aDoc.get('userId') === uid) throw new Error('Cannot vote your own answer');
 
       const uvRef = db.collection('userVotes').doc(`${date}_${uid}`);
       const uvDoc = await tx.get(uvRef);
 
       if (!uvDoc.exists) {
-        tx.set(uvRef, {
-          date,
-          uid,
-          answerId,
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        });
+        tx.set(uvRef, { date, uid, answerId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
         tx.update(aRef, { votes: admin.firestore.FieldValue.increment(1) });
         changed = true;
       } else {
@@ -307,125 +216,108 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
         if (prevId !== answerId) {
           const prevRef = qRef.collection('answers').doc(prevId);
           const prevDoc = await tx.get(prevRef);
-          if (prevDoc.exists)
-            tx.update(prevRef, {
-              votes: admin.firestore.FieldValue.increment(-1),
-            });
+          if (prevDoc.exists) tx.update(prevRef, { votes: admin.firestore.FieldValue.increment(-1) });
           tx.update(aRef, { votes: admin.firestore.FieldValue.increment(1) });
-          tx.update(uvRef, {
-            answerId,
-            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-          });
+          tx.update(uvRef, { answerId, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
           changed = true;
         }
       }
     });
 
     const io = req.app.get('io');
-    if (io && changed)
-      io.to(date).emit('answer:voted', { answerId, prevAnswerId: prevId, uid });
+    if (io && changed) io.to(date).emit('answer:voted', { answerId, prevAnswerId: prevId, uid });
 
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
-    res
-      .status(e.status || 500)
-      .json({ error: e.message || 'Vote failed' });
+    res.status(500).json({ error: e.message || 'Vote failed' });
   }
 });
 
-// GET /api/questions/:date/winner (ADMIN)
+// ✅ GET /api/questions/:date/winner (ADMIN)
 router.get('/:date/winner', verifyAuth, requireAdmin, async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
 
     const qRef = db.collection('questions').doc(date);
-    const qDoc = await qRef.get();
-    if (!qDoc.exists)
-      return res.status(404).json({ error: 'Question not found' });
+    const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
 
-    const snap = await qRef
-      .collection('answers')
-      .orderBy('votes', 'desc')
-      .limit(1)
-      .get();
     if (snap.empty) return res.json({ winner: null });
-
     const d = snap.docs[0];
     res.json({ winner: { id: d.id, ...d.data() } });
   } catch (e) {
     console.error(e);
-    res
-      .status(e.status || 500)
-      .json({ error: e.message || 'Failed to fetch winner.' });
+    res.status(500).json({ error: e.message || 'Failed to fetch winner.' });
   }
 });
 
-// POST /api/questions/:date/compute-winner  (ADMIN)
-router.post('/:date/compute-winner', verifyAuth, requireAdmin, async (req, res) => {
+// ✅ POST /api/questions/:date/compute-winner (ADMIN or CRON)
+router.post('/:date/compute-winner', verifyAuth, async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
 
+    // Allow CRON access
+    const authHeader = req.headers.authorization || "";
+    const cronKey = authHeader.replace("Bearer ", "").trim();
+    if (cronKey !== CRON_SECRET && !req.user?.admin) {
+      return res.status(403).json({ error: "Unauthorized (Admin or Cron only)" });
+    }
+
     const qRef = db.collection('questions').doc(date);
     const qDoc = await qRef.get();
-    if (!qDoc.exists)
-      return res.status(404).json({ error: 'Question not found' });
+    if (!qDoc.exists) return res.status(404).json({ error: 'Question not found' });
 
-    const snap = await qRef
-      .collection('answers')
-      .orderBy('votes', 'desc')
-      .limit(1)
-      .get();
+    const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
+    if (snap.empty) return res.json({ winner: null });
 
-    const winner = snap.empty
-      ? null
-      : { id: snap.docs[0].id, ...snap.docs[0].data() };
+    const winnerDoc = snap.docs[0];
+    const winner = { id: winnerDoc.id, ...winnerDoc.data() };
 
-    // ✅ Get display name
+    // Prevent duplicate increment
+    const qData = qDoc.data();
+    if (qData.winner && qData.winner.userId === winner.userId) {
+      return res.json({ message: 'Winner already computed previously', winner });
+    }
+
+    // Fetch winner name
     let displayName = 'Anonymous';
-    if (winner && winner.userId) {
+    if (winner.userId) {
       const userDoc = await db.collection('users').doc(winner.userId).get();
       if (userDoc.exists) displayName = userDoc.data().displayName || 'Anonymous';
     }
 
-    // ✅ Save winner (with displayName)
-    await qRef.set(
-      {
-        winner: winner
-          ? {
-              id: winner.id,
-              text: winner.text || '',
-              userId: winner.userId || null,
-              displayName,
-              votes: winner.votes || 0,
-              computedAt: admin.firestore.FieldValue.serverTimestamp(),
-              payoutStatus: 'pending',
-            }
-          : null,
+    // Save winner
+    await qRef.set({
+      winner: {
+        id: winner.id,
+        text: winner.text || '',
+        userId: winner.userId || null,
+        displayName,
+        votes: winner.votes || 0,
+        computedAt: admin.firestore.FieldValue.serverTimestamp(),
       },
-      { merge: true }
-    );
+    }, { merge: true });
 
-    // ✅ Increment "Discussions Won"
-    if (winner && winner.userId) {
-      const winnerRef = db.collection('users').doc(winner.userId);
+    // Increment discussionsWon
+    if (winner.userId) {
+      const userRef = db.collection('users').doc(winner.userId);
       await db.runTransaction(async (t) => {
-        const doc = await t.get(winnerRef);
+        const doc = await t.get(userRef);
         const prev = doc.exists ? doc.data().discussionsWon || 0 : 0;
-        t.set(winnerRef, { discussionsWon: prev + 1 }, { merge: true });
+        t.set(userRef, { discussionsWon: prev + 1 }, { merge: true });
       });
     }
 
-    res.json({ winner });
+    const io = req.app.get('io');
+    if (io) io.to(date).emit('winner:computed', { date, winner });
+
+    res.json({ message: 'Winner computed successfully', winner });
   } catch (e) {
     console.error(e);
-    res
-      .status(e.status || 500)
-      .json({ error: e.message || 'Failed to compute winner.' });
+    res.status(500).json({ error: e.message || 'Failed to compute winner.' });
   }
 });
 
 module.exports = router;
-

@@ -14,6 +14,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 const cron = require("node-cron");
+const axios = require("axios");
 
 // ===== Routes =====
 const questionRoutes = require("./routes/questions");
@@ -37,27 +38,24 @@ const io = new Server(server, {
   },
 });
 
-// Store globally (optional)
+// Store globally
 app.set("io", io);
 
 // ===== SOCKET LOGIC =====
 io.on("connection", (socket) => {
   console.log("⚡ Socket connected:", socket.id);
 
-  // 🔐 Store userId if passed via query
   const userId = socket.handshake.query.tokenUid;
   if (userId) {
     socket.join(userId);
     console.log(`👤 User ${userId} joined personal socket room`);
   }
 
-  // --- Question Rooms ---
   socket.on("join-day", (date) => {
     socket.join(date);
     console.log(`📅 ${socket.id} joined room for ${date}`);
   });
 
-  // --- Answer Discussion Threads ---
   socket.on("join-answer", (answerId) => {
     socket.join(`answer:${answerId}`);
     console.log(`💬 ${socket.id} joined thread for answer ${answerId}`);
@@ -68,7 +66,6 @@ io.on("connection", (socket) => {
     console.log(`🚪 ${socket.id} left thread for answer ${answerId}`);
   });
 
-  // --- Private Debate Chats ---
   socket.on("join-chat", (chatId) => {
     socket.join(chatId);
     console.log(`🗨️ ${socket.id} joined chat room ${chatId}`);
@@ -113,13 +110,13 @@ app.use("/api/chats", verifyAuth, chatRoutes);
 app.use("/api/premium", premiumRoutes);
 
 // ===== Simple health check =====
-app.get("/health", (_req, res) =>
-  res.json({ ok: true, ts: Date.now() })
-);
+app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ===== CRON JOB =====
 const db = admin.firestore();
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "59 23 * * *"; // 23:59 daily
+const BACKEND_URL = process.env.BACKEND_URL || "https://footy-backend-yka8.onrender.com";
+const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";
 
 cron.schedule(CRON_SCHEDULE, async () => {
   try {
@@ -130,44 +127,26 @@ cron.schedule(CRON_SCHEDULE, async () => {
 
     console.log(`[CRON] Running daily rotation for ${today}`);
 
+    // 1️⃣ Call the backend endpoint to compute winner (updates discussionsWon)
+    const res = await axios.post(
+      `${BACKEND_URL}/api/questions/${today}/compute-winner`,
+      {},
+      { headers: { Authorization: `Bearer ${CRON_SECRET}` } }
+    );
+
+    console.log(`[CRON] Winner computed via API →`, res.data?.winner?.displayName || "No winner");
+
+    // 2️⃣ Close today's question
     const qRef = db.collection("questions").doc(today);
-    const qDoc = await qRef.get();
-    if (!qDoc.exists) {
-      console.log(`[CRON] No question for ${today}`);
-      return;
-    }
-
-    // 1️⃣ Compute winner
-    const snap = await qRef
-      .collection("answers")
-      .orderBy("votes", "desc")
-      .limit(1)
-      .get();
-
-    const winner = snap.empty
-      ? null
-      : { id: snap.docs[0].id, ...snap.docs[0].data() };
-
     await qRef.set(
       {
-        winner: winner
-          ? {
-              id: winner.id,
-              text: winner.text || "",
-              userId: winner.userId || null,
-              votes: winner.votes || 0,
-              computedAt: admin.firestore.FieldValue.serverTimestamp(),
-              payoutStatus: "pending",
-            }
-          : null,
         closedAt: admin.firestore.FieldValue.serverTimestamp(),
+        isActive: false,
       },
       { merge: true }
     );
 
-    console.log(`[CRON] Winner computed for ${today}`);
-
-    // 2️⃣ Open tomorrow’s question if it exists
+    // 3️⃣ Open tomorrow’s question if it exists
     const nextRef = db.collection("questions").doc(tomorrow);
     const nextDoc = await nextRef.get();
 
@@ -182,13 +161,13 @@ cron.schedule(CRON_SCHEDULE, async () => {
 
       console.log(`[CRON] Tomorrow’s question activated → ${tomorrow}`);
 
-      // 3️⃣ Notify all connected clients
+      // Notify all connected clients
       io.emit("day:rotated", { closed: today, opened: tomorrow });
     } else {
       console.log(`[CRON] No question scheduled for tomorrow (${tomorrow})`);
     }
   } catch (err) {
-    console.error("[CRON] Rotation failed:", err.message);
+    console.error("[CRON] Rotation failed:", err.response?.data || err.message);
   }
 });
 
