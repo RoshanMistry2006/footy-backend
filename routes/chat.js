@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const admin = require("firebase-admin");
 const db = admin.firestore();
-const bannedWords = require("../utils/bannedWords"); // ✅ import banned words
+const bannedWords = require("../utils/bannedWords");
 
 // ===== Helper function to detect banned words =====
 function containsBannedWord(text) {
@@ -48,6 +48,7 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ error: "Request already sent." });
     }
 
+    // ✅ Save to chatRequests (main request collection)
     const ref = db.collection("chatRequests").doc();
     const data = {
       id: ref.id,
@@ -63,17 +64,27 @@ router.post("/request", async (req, res) => {
 
     await ref.set(data);
 
-    // 🔥 Notify target via socket (for chatRequests page + red badge)
+    // ✅ ALSO save to debateRequests (for badge tracking)
+    await db.collection("debateRequests").add({
+      toUid,
+      fromUid,
+      topic,
+      seen: false,
+      status: "pending",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 🔥 Notify target via socket (for both pages + red badge)
     const io = req.app.get("io");
     if (io) {
-      io.to(toUid).emit("chat:request", data); // already used in your app
+      io.to(toUid).emit("chat:request", data);
       io.to(toUid).emit("challenge:received", {
         type: "newChallenge",
         fromUid,
         fromDisplayName,
         topic,
         commentText: commentText || "",
-      }); // ✅ triggers red notification badge on frontend
+      });
     }
 
     res.status(201).json({ id: ref.id, message: "Request sent." });
@@ -106,6 +117,33 @@ router.get("/requests", async (req, res) => {
     res.json(requests);
   } catch (err) {
     console.error("🔥 Error in GET /requests:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * ✅ NEW: POST /api/chats/mark-seen
+ * Mark all debate requests for the current user as "seen"
+ */
+router.post("/mark-seen", async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    const batch = db.batch();
+
+    const snap = await db
+      .collection("debateRequests")
+      .where("toUid", "==", uid)
+      .where("seen", "==", false)
+      .get();
+
+    snap.docs.forEach((doc) => {
+      batch.update(doc.ref, { seen: true });
+    });
+
+    await batch.commit();
+    res.json({ message: "All requests marked as seen." });
+  } catch (err) {
+    console.error("🔥 Error in POST /mark-seen:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -190,7 +228,6 @@ router.post("/:chatId/messages", async (req, res) => {
     if (!text?.trim())
       return res.status(400).json({ error: "Empty message." });
 
-    // ✅ Check for banned words before saving
     if (containsBannedWord(text)) {
       return res.status(400).json({
         error: "Your message contains banned words and cannot be sent.",
