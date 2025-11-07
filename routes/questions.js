@@ -234,13 +234,13 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   }
 });
 
-// ✅ POST /api/questions/:date/compute-winner (ADMIN or CRON)
+// ✅ POST /api/questions/:date/compute-winner (CRON or Admin)
 router.post('/:date/compute-winner', async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
 
-    // ✅ Allow CRON access (skip Firebase auth)
+    // ✅ Allow CRON access
     const authHeader = req.headers.authorization || "";
     const cronKey = authHeader.replace("Bearer ", "").trim();
     if (cronKey !== CRON_SECRET) {
@@ -299,6 +299,18 @@ router.post('/:date/compute-winner', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || 'Failed to compute winner.' });
+  }
+});
+
+// ✅ NEW: Shortcut route for CRON → /api/questions/today/compute-winner
+router.post('/today/compute-winner', async (req, res) => {
+  try {
+    const today = todayStr();
+    req.params.date = today;
+    router.handle(req, res, () => {});
+  } catch (e) {
+    console.error('Error in /today/compute-winner:', e);
+    res.status(500).json({ error: e.message || 'Failed to compute today winner.' });
   }
 });
 
