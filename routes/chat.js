@@ -325,5 +325,32 @@ setInterval(async () => {
     console.error("🔥 Error cleaning expired chats:", err);
   }
 }, 12 * 60 * 60 * 1000);
+/**
+ * GET /api/chats/sent
+ * Fetch all debate requests SENT by the logged-in user
+ */
+router.get("/sent", async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    if (!uid) return res.status(400).json({ error: "Missing user UID" });
+
+    // ✅ Query for requests SENT by this user
+    const snap = await db
+      .collection("chatRequests")
+      .where("fromUid", "==", uid)
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const requests = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    res.json(requests);
+  } catch (err) {
+    console.error("🔥 Error in GET /sent:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
