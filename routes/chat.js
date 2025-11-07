@@ -96,7 +96,7 @@ router.post("/request", async (req, res) => {
 
 /**
  * GET /api/chats/requests
- * Fetch all debate requests for the logged-in user
+ * Fetch all debate requests RECEIVED by the logged-in user
  */
 router.get("/requests", async (req, res) => {
   try {
@@ -122,7 +122,34 @@ router.get("/requests", async (req, res) => {
 });
 
 /**
- * ✅ NEW: POST /api/chats/mark-seen
+ * ✅ NEW: GET /api/chats/sent
+ * Fetch all debate requests SENT by the logged-in user
+ */
+router.get("/sent", async (req, res) => {
+  try {
+    const uid = req.user.uid;
+    if (!uid) return res.status(400).json({ error: "Missing user UID" });
+
+    const snap = await db
+      .collection("chatRequests")
+      .where("fromUid", "==", uid)
+      .orderBy("createdAt", "desc")
+      .get();
+
+    const sentRequests = snap.docs.map((d) => ({
+      id: d.id,
+      ...d.data(),
+    }));
+
+    res.json(sentRequests);
+  } catch (err) {
+    console.error("🔥 Error in GET /sent:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * ✅ POST /api/chats/mark-seen
  * Mark all debate requests for the current user as "seen"
  */
 router.post("/mark-seen", async (req, res) => {
@@ -198,7 +225,7 @@ router.post("/respond", async (req, res) => {
         io.to(data.fromUid).emit("chat:accepted", {
           chatId: chatRef.id,
           topic: data.topic,
-          opponent: uid,
+          opponent: data.toUid,
           expiresAt,
         });
         io.to(data.toUid).emit("chat:accepted", {
@@ -285,14 +312,18 @@ router.get("/:chatId/messages", async (req, res) => {
   }
 });
 
-// Auto-clean expired chats every 12h
+// 🧹 Auto-clean expired chats every 12h
 setInterval(async () => {
-  const now = Date.now();
-  const snap = await db.collection("chats").where("expiresAt", "<", now).get();
-  for (const doc of snap.docs) {
-    await doc.ref.delete();
+  try {
+    const now = Date.now();
+    const snap = await db.collection("chats").where("expiresAt", "<", now).get();
+    for (const doc of snap.docs) {
+      await doc.ref.delete();
+    }
+    console.log(`🧹 Deleted ${snap.size} expired chats`);
+  } catch (err) {
+    console.error("🔥 Error cleaning expired chats:", err);
   }
-  console.log(`🧹 Deleted ${snap.size} expired chats`);
 }, 12 * 60 * 60 * 1000);
 
 module.exports = router;
