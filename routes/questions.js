@@ -302,16 +302,88 @@ router.post('/:date/compute-winner', async (req, res) => {
   }
 });
 
-// ✅ NEW: Shortcut route for CRON → /api/questions/today/compute-winner
-router.post('/today/compute-winner', async (req, res) => {
+// ✅ POST /api/questions/:date/compute-winner (ADMIN or CRON)
+router.post('/:date/compute-winner', async (req, res) => {
   try {
-    const today = todayStr();
-    req.params.date = today;
-    router.handle(req, res, () => {});
+    const { date } = req.params;
+    assertDate(date);
+
+    // ✅ Allow CRON access (skip Firebase auth)
+    const authHeader = req.headers.authorization || "";
+    const cronKey = authHeader.replace("Bearer ", "").trim();
+    if (cronKey !== CRON_SECRET) {
+      return res.status(403).json({ error: "Unauthorized (Cron only)" });
+    }
+
+    const qRef = db.collection('questions').doc(date);
+    const qDoc = await qRef.get();
+    if (!qDoc.exists) return res.status(404).json({ error: 'Question not found' });
+
+    const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
+    if (snap.empty) return res.json({ winner: null });
+
+    const winnerDoc = snap.docs[0];
+    const winner = { id: winnerDoc.id, ...winnerDoc.data() };
+
+    // Prevent duplicate increment
+    const qData = qDoc.data();
+    if (qData.winner && qData.winner.userId === winner.userId) {
+      return res.json({ message: 'Winner already computed previously', winner });
+    }
+
+    // Fetch winner name
+    let displayName = 'Anonymous';
+    if (winner.userId) {
+      const userDoc = await db.collection('users').doc(winner.userId).get();
+      if (userDoc.exists) displayName = userDoc.data().displayName || 'Anonymous';
+    }
+
+    // Save winner
+    await qRef.set({
+      winner: {
+        id: winner.id,
+        text: winner.text || '',
+        userId: winner.userId || null,
+        displayName,
+        votes: winner.votes || 0,
+        computedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+    }, { merge: true });
+
+    // Increment discussionsWon
+    if (winner.userId) {
+      const userRef = db.collection('users').doc(winner.userId);
+      await db.runTransaction(async (t) => {
+        const doc = await t.get(userRef);
+        const prev = doc.exists ? doc.data().discussionsWon || 0 : 0;
+        t.set(userRef, { discussionsWon: prev + 1 }, { merge: true });
+      });
+    }
+
+    const io = req.app.get('io');
+    if (io) io.to(date).emit('winner:computed', { date, winner });
+
+    res.json({ message: 'Winner computed successfully', winner });
   } catch (e) {
-    console.error('Error in /today/compute-winner:', e);
-    res.status(500).json({ error: e.message || 'Failed to compute today winner.' });
+    console.error(e);
+    res.status(500).json({ error: e.message || 'Failed to compute winner.' });
   }
 });
+
+
+// ✅ NEW SHORTCUT ROUTE FOR CRON JOB
+router.post('/today/compute-winner', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0]; // "YYYY-MM-DD"
+    req.params.date = today;
+    // Call the same logic as /:date/compute-winner
+    return router.handle(req, res, () => {});
+  } catch (err) {
+    console.error('Error in /today/compute-winner:', err);
+    res.status(500).json({ error: err.message || 'Failed to compute today’s winner.' });
+  }
+});
+
+
 
 module.exports = router;
