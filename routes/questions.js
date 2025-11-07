@@ -234,35 +234,17 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   }
 });
 
-// ✅ GET /api/questions/:date/winner (ADMIN)
-router.get('/:date/winner', verifyAuth, requireAdmin, async (req, res) => {
-  try {
-    const { date } = req.params;
-    assertDate(date);
-
-    const qRef = db.collection('questions').doc(date);
-    const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
-
-    if (snap.empty) return res.json({ winner: null });
-    const d = snap.docs[0];
-    res.json({ winner: { id: d.id, ...d.data() } });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message || 'Failed to fetch winner.' });
-  }
-});
-
 // ✅ POST /api/questions/:date/compute-winner (ADMIN or CRON)
-router.post('/:date/compute-winner', verifyAuth, async (req, res) => {
+router.post('/:date/compute-winner', async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
 
-    // Allow CRON access
+    // ✅ Allow CRON access (skip Firebase auth)
     const authHeader = req.headers.authorization || "";
     const cronKey = authHeader.replace("Bearer ", "").trim();
-    if (cronKey !== CRON_SECRET && !req.user?.admin) {
-      return res.status(403).json({ error: "Unauthorized (Admin or Cron only)" });
+    if (cronKey !== CRON_SECRET) {
+      return res.status(403).json({ error: "Unauthorized (Cron only)" });
     }
 
     const qRef = db.collection('questions').doc(date);
