@@ -168,14 +168,18 @@ router.post("/respond", async (req, res) => {
     if (data.status !== "pending")
       return res.status(400).json({ error: "Already handled." });
 
+    const io = req.app.get("io");
+
     if (action === "decline") {
-      await ref.update({ status: "declined" });
-      req.io.to(data.fromUid).emit("chat:declined", { requestId });
-      return res.json({ message: "Request declined." });
+      await ref.delete(); // ✅ delete declined requests
+      if (io) io.to(data.fromUid).emit("chat:declined", { requestId });
+      return res.json({ message: "Request declined and deleted." });
     }
 
     if (action === "accept") {
-      await ref.update({ status: "accepted" });
+      // ✅ Update request with accepted + expiry
+      const expiresAt = Date.now() + 48 * 60 * 60 * 1000; // 48h from now
+      await ref.update({ status: "accepted", expiresAt });
 
       // ✅ Create chat room
       const chatRef = db.collection("chats").doc();
@@ -186,25 +190,29 @@ router.post("/respond", async (req, res) => {
         topic: data.topic,
         commentText: data.commentText || "",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        expiresAt,
       });
 
-      // Notify both users
-      req.io.to(data.fromUid).emit("chat:accepted", {
-        chatId: chatRef.id,
-        topic: data.topic,
-        commentText: data.commentText || "",
-        opponent: uid,
-      });
-      req.io.to(data.toUid).emit("chat:accepted", {
-        chatId: chatRef.id,
-        topic: data.topic,
-        commentText: data.commentText || "",
-        opponent: data.fromUid,
-      });
+      // ✅ Notify both users
+      if (io) {
+        io.to(data.fromUid).emit("chat:accepted", {
+          chatId: chatRef.id,
+          topic: data.topic,
+          opponent: uid,
+          expiresAt,
+        });
+        io.to(data.toUid).emit("chat:accepted", {
+          chatId: chatRef.id,
+          topic: data.topic,
+          opponent: data.fromUid,
+          expiresAt,
+        });
+      }
 
       return res.json({
         message: "Request accepted.",
         chatId: chatRef.id,
+        expiresAt,
       });
     }
 
@@ -276,5 +284,15 @@ router.get("/:chatId/messages", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Auto-clean expired chats every 12h
+setInterval(async () => {
+  const now = Date.now();
+  const snap = await db.collection("chats").where("expiresAt", "<", now).get();
+  for (const doc of snap.docs) {
+    await doc.ref.delete();
+  }
+  console.log(`🧹 Deleted ${snap.size} expired chats`);
+}, 12 * 60 * 60 * 1000);
 
 module.exports = router;
