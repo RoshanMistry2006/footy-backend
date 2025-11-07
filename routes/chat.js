@@ -121,32 +121,7 @@ router.get("/requests", async (req, res) => {
   }
 });
 
-/**
- * ✅ NEW: GET /api/chats/sent
- * Fetch all debate requests SENT by the logged-in user
- */
-router.get("/sent", async (req, res) => {
-  try {
-    const uid = req.user.uid;
-    if (!uid) return res.status(400).json({ error: "Missing user UID" });
 
-    const snap = await db
-      .collection("chatRequests")
-      .where("fromUid", "==", uid)
-      .orderBy("createdAt", "desc")
-      .get();
-
-    const sentRequests = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
-    res.json(sentRequests);
-  } catch (err) {
-    console.error("🔥 Error in GET /sent:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 /**
  * ✅ POST /api/chats/mark-seen
