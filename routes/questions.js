@@ -303,6 +303,28 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   }
 });
 
+// ✅ GET /api/questions/:date/vote → return the user's voted answerId
+router.get('/:date/vote', verifyAuth, async (req, res) => {
+  try {
+    const { date } = req.params;
+    assertDate(date);
+    const uid = req.user.uid;
+
+    const doc = await db.collection('userVotes').doc(`${date}_${uid}`).get();
+
+    if (!doc.exists) {
+      return res.status(204).send(); // No vote yet for this user
+    }
+
+    const data = doc.data();
+    return res.status(200).json({ answerId: data.answerId });
+  } catch (err) {
+    console.error('Error fetching user vote:', err);
+    return res.status(500).json({ error: 'Failed to fetch user vote.' });
+  }
+});
+
+
 // ✅ POST /api/questions/:date/compute-winner (CRON)
 router.post('/:date/compute-winner', async (req, res) => {
   try {
