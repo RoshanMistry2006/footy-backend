@@ -1,11 +1,17 @@
 // ===== Env & Admin init =====
 require("dotenv").config();
+const fs = require("fs");
 const admin = require("firebase-admin");
-const serviceAccount = require("./firebasekey.json");
+
+const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+if (!keyPath) throw new Error("Missing GOOGLE_APPLICATION_CREDENTIALS");
+
+const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
+
 
 // ===== Core imports =====
 const express = require("express");
