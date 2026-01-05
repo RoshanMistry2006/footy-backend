@@ -1,8 +1,7 @@
 // routes/premium.js
 const express = require("express");
 const router = express.Router();
-const admin = require("firebase-admin");
-const db = admin.firestore();
+const { admin, db } = require('../db');
 const { verifyAuth } = require("../verifyAuth");
 
 // ✅ Activate premium design for an answer

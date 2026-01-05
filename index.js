@@ -1,16 +1,7 @@
 // ===== Env & Admin init =====
-require("dotenv").config();
-const fs = require("fs");
-const admin = require("firebase-admin");
+const { admin, db } = require("./db");
 
-const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-if (!keyPath) throw new Error("Missing GOOGLE_APPLICATION_CREDENTIALS");
 
-const serviceAccount = JSON.parse(fs.readFileSync(keyPath, "utf8"));
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
 
 
 // ===== Core imports =====
@@ -119,7 +110,7 @@ app.use("/api/premium", premiumRoutes);
 app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
 // ===== CRON JOB =====
-const db = admin.firestore();
+
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "59 23 * * *"; // 23:59 daily
 const BACKEND_URL = process.env.BACKEND_URL || "https://footy-backend-yka8.onrender.com";
 const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";

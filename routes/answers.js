@@ -1,9 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const admin = require('firebase-admin');
+const { admin, db } = require('../db');
 const { verifyAuth } = require('../verifyAuth');
-
-const db = admin.firestore();
 
 /**
  * POST /api/answers
@@ -147,4 +145,3 @@ router.post('/:date/:answerId/premium', verifyAuth, async (req, res) => {
 });
 
 module.exports = router;
-

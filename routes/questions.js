@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const admin = require('firebase-admin');
+const { admin, db } = require('../db');
 const { verifyAuth } = require('../verifyAuth');
 const { requireAdmin } = require('../requireAdmin');
 
-const db = admin.firestore();
+
 const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";
 
 // ---------- helpers ----------

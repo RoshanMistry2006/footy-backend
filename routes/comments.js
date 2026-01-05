@@ -1,11 +1,11 @@
 // routes/comments.js
 const express = require('express');
 const router = express.Router({ mergeParams: true });
-const admin = require('firebase-admin');
+const { admin, db } = require('../db');
 const { verifyAuth } = require('../verifyAuth');
 const bannedWords = require('../utils/bannedWords');
 
-const db = admin.firestore();
+
 
 console.log("✅ comments.js loaded successfully on server startup");
 
