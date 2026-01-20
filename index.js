@@ -20,6 +20,7 @@ const commentsRoutes = require("./routes/comments");
 const chatRoutes = require("./routes/chat"); // ✅ Debate chats
 const premiumRoutes = require("./routes/premium");
 const { verifyAuth } = require("./verifyAuth");
+const accountRoutes = require("./routes/account");
 
 // ===== App + Server =====
 const app = express();
@@ -99,6 +100,8 @@ app.use((req, _res, next) => {
 app.use("/api/questions", questionRoutes);
 app.use("/api/answers", answerRoutes);
 app.use("/api/questions/:date/answers/:answerId/comments", commentsRoutes);
+app.use("/api/account", accountRoutes);
+
 
 // ✅ Debate Chat Routes (secured)
 app.use("/api/chats", verifyAuth, chatRoutes);
@@ -108,6 +111,7 @@ app.use("/api/premium", premiumRoutes);
 
 // ===== Simple health check =====
 app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
+
 
 // ===== CRON JOB =====
 
