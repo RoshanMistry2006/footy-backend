@@ -4,8 +4,7 @@ const { admin, db } = require('../db');
 const { verifyAuth } = require('../verifyAuth');
 const { requireAdmin } = require('../requireAdmin');
 
-
-const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";
+const CRON_SECRET = process.env.CRON_SECRET;
 
 // ---------- helpers ----------
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -27,81 +26,84 @@ function isVotingOpen(qDoc) {
   return qDoc.id === todayStr();
 }
 
+// ---------- shared helper ----------
+
+/**
+ * Compute and persist the winner for a given date.
+ * Returns { winner } or throws on error.
+ */
+async function computeWinner(date, io) {
+  const qRef = db.collection('questions').doc(date);
+  const qDoc = await qRef.get();
+  if (!qDoc.exists) throw Object.assign(new Error(`Question not found for ${date}`), { status: 404 });
+
+  const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
+  if (snap.empty) return { winner: null, message: `No answers found for ${date}` };
+
+  const winnerDoc = snap.docs[0];
+  const winner = { id: winnerDoc.id, ...winnerDoc.data() };
+
+  const qData = qDoc.data();
+  if (qData.winner && qData.winner.userId === winner.userId) {
+    return { winner, message: 'Winner already computed previously' };
+  }
+
+  let displayName = 'Anonymous';
+  if (winner.userId) {
+    const userDoc = await db.collection('users').doc(winner.userId).get();
+    if (userDoc.exists) displayName = userDoc.data().displayName || 'Anonymous';
+  }
+
+  await qRef.set({
+    winner: {
+      id: winner.id,
+      text: winner.text || '',
+      userId: winner.userId || null,
+      displayName,
+      votes: winner.votes || 0,
+      computedAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+  }, { merge: true });
+
+  if (winner.userId) {
+    const userRef = db.collection('users').doc(winner.userId);
+    await db.runTransaction(async (t) => {
+      const doc = await t.get(userRef);
+      const prev = doc.exists ? doc.data().discussionsWon || 0 : 0;
+      t.set(userRef, { discussionsWon: prev + 1 }, { merge: true });
+    });
+  }
+
+  if (io) io.to(date).emit('winner:computed', { date, winner });
+
+  return { winner, message: 'Winner computed successfully' };
+}
+
+function verifyCronSecret(req, res) {
+  const cronKey = (req.headers.authorization || '').replace('Bearer ', '').trim();
+  if (cronKey !== CRON_SECRET) {
+    res.status(403).json({ error: 'Unauthorized (Cron only)' });
+    return false;
+  }
+  return true;
+}
+
 // ---------- routes ----------
 
-// ✅ SHORTCUT ROUTE FOR CRON JOB (must be before :date routes!)
+// SHORTCUT ROUTE FOR CRON JOB (must be before :date routes!)
 router.post('/today/compute-winner', async (req, res) => {
+  if (!verifyCronSecret(req, res)) return;
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const authHeader = req.headers.authorization || "";
-    const cronKey = authHeader.replace("Bearer ", "").trim();
-
-    if (cronKey !== CRON_SECRET) {
-      return res.status(403).json({ error: "Unauthorized (Cron only)" });
-    }
-
-    const qRef = db.collection('questions').doc(today);
-    const qDoc = await qRef.get();
-
-    if (!qDoc.exists) {
-      return res.status(404).json({ error: `Question not found for ${today}` });
-    }
-
-    const snap = await qRef.collection('answers')
-      .orderBy('votes', 'desc')
-      .limit(1)
-      .get();
-
-    if (snap.empty) {
-      return res.json({ message: `No answers found for ${today}` });
-    }
-
-    const winnerDoc = snap.docs[0];
-    const winner = { id: winnerDoc.id, ...winnerDoc.data() };
-
-    const qData = qDoc.data();
-    if (qData.winner && qData.winner.userId === winner.userId) {
-      return res.json({ message: 'Winner already computed previously', winner });
-    }
-
-    let displayName = 'Anonymous';
-    if (winner.userId) {
-      const userDoc = await db.collection('users').doc(winner.userId).get();
-      if (userDoc.exists) displayName = userDoc.data().displayName || 'Anonymous';
-    }
-
-    await qRef.set({
-      winner: {
-        id: winner.id,
-        text: winner.text || '',
-        userId: winner.userId || null,
-        displayName,
-        votes: winner.votes || 0,
-        computedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-    }, { merge: true });
-
-    if (winner.userId) {
-      const userRef = db.collection('users').doc(winner.userId);
-      await db.runTransaction(async (t) => {
-        const doc = await t.get(userRef);
-        const prev = doc.exists ? doc.data().discussionsWon || 0 : 0;
-        t.set(userRef, { discussionsWon: prev + 1 }, { merge: true });
-      });
-    }
-
-    const io = req.app.get('io');
-    if (io) io.to(today).emit('winner:computed', { date: today, winner });
-
-    res.json({ message: `Winner computed successfully for ${today}`, winner });
-
+    const today = todayStr();
+    const result = await computeWinner(today, req.app.get('io'));
+    res.json({ date: today, ...result });
   } catch (err) {
     console.error('Error in /today/compute-winner:', err);
-    res.status(500).json({ error: err.message || 'Failed to compute today\'s winner.' });
+    res.status(err.status || 500).json({ error: err.message || 'Failed to compute winner.' });
   }
 });
 
-// ✅ GET /api/questions/today
+// GET /api/questions/today
 router.get('/today', async (req, res) => {
   try {
     const today = todayStr();
@@ -115,16 +117,14 @@ router.get('/today', async (req, res) => {
   }
 });
 
-// ✅ GET /api/questions/:date → fetch question text for that date
+// GET /api/questions/:date
 router.get('/:date', async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
-
     const doc = await db.collection('questions').doc(date).get();
     if (!doc.exists)
       return res.status(404).json({ error: 'No question found for this date.' });
-
     const data = doc.data();
     if (data.time && data.time.toDate) {
       data.time = data.time.toDate().toISOString();
@@ -136,19 +136,17 @@ router.get('/:date', async (req, res) => {
   }
 });
 
-// ✅ GET /api/questions/:date/answers (sorted by votes desc)
+// GET /api/questions/:date/answers (sorted by votes desc)
 router.get('/:date/answers', async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
-
     const snap = await db
       .collection('questions')
       .doc(date)
       .collection('answers')
       .orderBy('votes', 'desc')
       .get();
-
     const answers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     res.json({ count: answers.length, answers });
   } catch (err) {
@@ -157,12 +155,11 @@ router.get('/:date/answers', async (req, res) => {
   }
 });
 
-// ✅ POST /api/questions/:date/answers → create a new answer
+// POST /api/questions/:date/answers
 router.post('/:date/answers', verifyAuth, async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
-
     const { text } = req.body || {};
     const uid = req.user?.uid || null;
     const displayName = req.user?.displayName || 'Anonymous';
@@ -179,7 +176,6 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
       .where('userId', '==', uid)
       .limit(1)
       .get();
-
     if (!answersSnap.empty)
       return res.status(403).json({ error: 'You have already submitted an answer for today.' });
 
@@ -212,7 +208,7 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
   }
 });
 
-// ✅ POST /api/questions/:date/comments
+// POST /api/questions/:date/comments
 router.post('/:date/comments', verifyAuth, async (req, res) => {
   try {
     const { date } = req.params;
@@ -224,7 +220,6 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
 
     const qRef = db.collection('questions').doc(date);
     const commentRef = qRef.collection('comments').doc();
-
     const comment = {
       id: commentRef.id,
       text: text.trim(),
@@ -252,7 +247,7 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
   }
 });
 
-// ✅ Voting route
+// Voting route
 router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   const { date, answerId } = req.params;
   const uid = req.user.uid;
@@ -303,88 +298,32 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   }
 });
 
-// ✅ GET /api/questions/:date/vote → return the user's voted answerId
+// GET /api/questions/:date/vote
 router.get('/:date/vote', verifyAuth, async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
     const uid = req.user.uid;
-
     const doc = await db.collection('userVotes').doc(`${date}_${uid}`).get();
-
-    if (!doc.exists) {
-      return res.status(204).send(); // No vote yet for this user
-    }
-
-    const data = doc.data();
-    return res.status(200).json({ answerId: data.answerId });
+    if (!doc.exists) return res.status(204).send();
+    return res.status(200).json({ answerId: doc.data().answerId });
   } catch (err) {
     console.error('Error fetching user vote:', err);
     return res.status(500).json({ error: 'Failed to fetch user vote.' });
   }
 });
 
-
-// ✅ POST /api/questions/:date/compute-winner (CRON)
+// POST /api/questions/:date/compute-winner (CRON)
 router.post('/:date/compute-winner', async (req, res) => {
+  if (!verifyCronSecret(req, res)) return;
   try {
     const { date } = req.params;
     assertDate(date);
-
-    const authHeader = req.headers.authorization || "";
-    const cronKey = authHeader.replace("Bearer ", "").trim();
-    if (cronKey !== CRON_SECRET) {
-      return res.status(403).json({ error: "Unauthorized (Cron only)" });
-    }
-
-    const qRef = db.collection('questions').doc(date);
-    const qDoc = await qRef.get();
-    if (!qDoc.exists) return res.status(404).json({ error: 'Question not found' });
-
-    const snap = await qRef.collection('answers').orderBy('votes', 'desc').limit(1).get();
-    if (snap.empty) return res.json({ winner: null });
-
-    const winnerDoc = snap.docs[0];
-    const winner = { id: winnerDoc.id, ...winnerDoc.data() };
-
-    const qData = qDoc.data();
-    if (qData.winner && qData.winner.userId === winner.userId) {
-      return res.json({ message: 'Winner already computed previously', winner });
-    }
-
-    let displayName = 'Anonymous';
-    if (winner.userId) {
-      const userDoc = await db.collection('users').doc(winner.userId).get();
-      if (userDoc.exists) displayName = userDoc.data().displayName || 'Anonymous';
-    }
-
-    await qRef.set({
-      winner: {
-        id: winner.id,
-        text: winner.text || '',
-        userId: winner.userId || null,
-        displayName,
-        votes: winner.votes || 0,
-        computedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-    }, { merge: true });
-
-    if (winner.userId) {
-      const userRef = db.collection('users').doc(winner.userId);
-      await db.runTransaction(async (t) => {
-        const doc = await t.get(userRef);
-        const prev = doc.exists ? doc.data().discussionsWon || 0 : 0;
-        t.set(userRef, { discussionsWon: prev + 1 }, { merge: true });
-      });
-    }
-
-    const io = req.app.get('io');
-    if (io) io.to(date).emit('winner:computed', { date, winner });
-
-    res.json({ message: 'Winner computed successfully', winner });
+    const result = await computeWinner(date, req.app.get('io'));
+    res.json({ date, ...result });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: e.message || 'Failed to compute winner.' });
+    res.status(e.status || 500).json({ error: e.message || 'Failed to compute winner.' });
   }
 });
 

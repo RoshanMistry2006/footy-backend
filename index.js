@@ -17,7 +17,7 @@ const axios = require("axios");
 const questionRoutes = require("./routes/questions");
 const answerRoutes = require("./routes/answers");
 const commentsRoutes = require("./routes/comments");
-const chatRoutes = require("./routes/chat"); // ✅ Debate chats
+const chatRoutes = require("./routes/chat");
 const premiumRoutes = require("./routes/premium");
 const { verifyAuth } = require("./verifyAuth");
 const accountRoutes = require("./routes/account");
@@ -90,7 +90,7 @@ app.use(
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// ✅ Inject io globally before any routes
+// Inject io globally before any routes
 app.use((req, _res, next) => {
   req.io = io;
   next();
@@ -102,23 +102,32 @@ app.use("/api/answers", answerRoutes);
 app.use("/api/questions/:date/answers/:answerId/comments", commentsRoutes);
 app.use("/api/account", accountRoutes);
 
-
-// ✅ Debate Chat Routes (secured)
+// Debate Chat Routes (secured)
 app.use("/api/chats", verifyAuth, chatRoutes);
 
-// ✅ Premium Routes (with live socket updates)
+// Premium Routes (with live socket updates)
 app.use("/api/premium", premiumRoutes);
 
 // ===== Simple health check =====
 app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
+// ===== CRON CONFIG =====
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "59 23 * * *";
+const BACKEND_URL = process.env.BACKEND_URL || "https://footy-backend-yka8.onrender.com";
+const CRON_SECRET = process.env.CRON_SECRET;
+if (!CRON_SECRET) throw new Error("❌ CRON_SECRET env var is required");
+
+// ===== Keep-alive ping (prevents Render cold starts) =====
+cron.schedule("*/10 * * * *", async () => {
+  try {
+    await axios.get(`${BACKEND_URL}/health`);
+    console.log("[Keep-alive] Ping sent");
+  } catch (err) {
+    console.warn("[Keep-alive] Ping failed:", err.message);
+  }
+});
 
 // ===== CRON JOB =====
-
-const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "59 23 * * *"; // 23:59 daily
-const BACKEND_URL = process.env.BACKEND_URL || "https://footy-backend-yka8.onrender.com";
-const CRON_SECRET = process.env.CRON_SECRET || "super_secret_key";
-
 cron.schedule(CRON_SCHEDULE, async () => {
   try {
     const today = new Date().toISOString().slice(0, 10);
@@ -128,7 +137,6 @@ cron.schedule(CRON_SCHEDULE, async () => {
 
     console.log(`[CRON] Running daily rotation for ${today}`);
 
-    // 1️⃣ Call the backend endpoint to compute winner (updates discussionsWon)
     const res = await axios.post(
       `${BACKEND_URL}/api/questions/${today}/compute-winner`,
       {},
@@ -137,32 +145,21 @@ cron.schedule(CRON_SCHEDULE, async () => {
 
     console.log(`[CRON] Winner computed via API →`, res.data?.winner?.displayName || "No winner");
 
-    // 2️⃣ Close today's question
     const qRef = db.collection("questions").doc(today);
     await qRef.set(
-      {
-        closedAt: admin.firestore.FieldValue.serverTimestamp(),
-        isActive: false,
-      },
+      { closedAt: admin.firestore.FieldValue.serverTimestamp(), isActive: false },
       { merge: true }
     );
 
-    // 3️⃣ Open tomorrow’s question if it exists
     const nextRef = db.collection("questions").doc(tomorrow);
     const nextDoc = await nextRef.get();
 
     if (nextDoc.exists) {
       await nextRef.set(
-        {
-          openedAt: admin.firestore.FieldValue.serverTimestamp(),
-          isActive: true,
-        },
+        { openedAt: admin.firestore.FieldValue.serverTimestamp(), isActive: true },
         { merge: true }
       );
-
-      console.log(`[CRON] Tomorrow’s question activated → ${tomorrow}`);
-
-      // Notify all connected clients
+      console.log(`[CRON] Tomorrow's question activated → ${tomorrow}`);
       io.emit("day:rotated", { closed: today, opened: tomorrow });
     } else {
       console.log(`[CRON] No question scheduled for tomorrow (${tomorrow})`);
