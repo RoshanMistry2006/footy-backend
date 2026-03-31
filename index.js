@@ -24,6 +24,9 @@ const accountRoutes = require("./routes/account");
 const app = express();
 const server = http.createServer(app);
 
+// Trust Render's proxy (required for express-rate-limit to work correctly)
+app.set("trust proxy", 1);
+
 // ===== Socket.IO =====
 const io = new Server(server, {
   cors: {
@@ -93,19 +96,11 @@ app.use((req, _res, next) => {
 
 // ===== RATE LIMITING =====
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
-});
-
-const writeLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, slow down." },
 });
 
 // Apply general limiter to all routes
