@@ -5,8 +5,6 @@ const { admin, db } = require('../db');
 const { verifyAuth } = require('../verifyAuth');
 const bannedWords = require('../utils/bannedWords');
 
-
-
 console.log("✅ comments.js loaded successfully on server startup");
 
 /**
@@ -32,7 +30,6 @@ router.post('/', verifyAuth, async (req, res) => {
       return res.status(400).json({ error: 'Text is required' });
     }
 
-    // ✅ Check for banned words
     if (containsBannedWord(text)) {
       return res.status(400).json({
         error: 'Your comment contains banned words and cannot be posted.',
@@ -40,15 +37,11 @@ router.post('/', verifyAuth, async (req, res) => {
     }
 
     const user = req.user;
-    let displayName = 'Anonymous';
+    // Use displayName from request body (sent by client from Firebase Auth)
+    // Falls back to token claim, then Anonymous — avoids an extra Firestore read per comment
+    const displayName = req.body.displayName?.trim() || user.displayName || 'Anonymous';
 
-    // ✅ Get display name from Firestore
-    const userDoc = await db.collection('users').doc(user.uid).get();
-    if (userDoc.exists) {
-      displayName = userDoc.data().displayName || 'Anonymous';
-    }
-
-    // ✅ Compute depth
+    // Compute depth
     let depth = 0;
     if (parentId) {
       const parentRef = db
@@ -66,7 +59,6 @@ router.post('/', verifyAuth, async (req, res) => {
       }
     }
 
-    // ✅ Build comment object
     const comment = {
       text: text.trim(),
       userId: user.uid,
@@ -78,7 +70,6 @@ router.post('/', verifyAuth, async (req, res) => {
       premiumStyle: {},
     };
 
-    // ✅ Save comment in Firestore
     const commentRef = db
       .collection('questions')
       .doc(date)
@@ -89,11 +80,8 @@ router.post('/', verifyAuth, async (req, res) => {
 
     await commentRef.set(comment);
 
-
-
     const saved = { id: commentRef.id, ...comment };
 
-    // ✅ Emit new comment via Socket.IO
     if (req.io) {
       req.io.to(`answer:${answerId}`).emit('comment:created', saved);
     }
@@ -152,7 +140,6 @@ router.delete('/:commentId', verifyAuth, async (req, res) => {
 
     await ref.delete();
 
-    // ✅ Emit delete event
     if (req.io) {
       req.io.to(`answer:${answerId}`).emit('comment:deleted', { id: commentId });
     }
@@ -167,4 +154,3 @@ router.delete('/:commentId', verifyAuth, async (req, res) => {
 });
 
 module.exports = router;
-

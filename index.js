@@ -1,11 +1,9 @@
 // ===== Env & Admin init =====
 const { admin, db } = require("./db");
 
-
-
-
 // ===== Core imports =====
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -36,7 +34,6 @@ const io = new Server(server, {
   },
 });
 
-// Store globally
 app.set("io", io);
 
 // ===== SOCKET LOGIC =====
@@ -80,12 +77,10 @@ io.on("connection", (socket) => {
 });
 
 // ===== Middleware =====
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST", "DELETE", "PATCH"],
-  })
-);
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "DELETE", "PATCH"],
+}));
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
@@ -96,6 +91,26 @@ app.use((req, _res, next) => {
   next();
 });
 
+// ===== RATE LIMITING =====
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+
+const writeLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, slow down." },
+});
+
+// Apply general limiter to all routes
+app.use(generalLimiter);
+
 // ===== API ROUTES =====
 app.use("/api/questions", questionRoutes);
 app.use("/api/answers", answerRoutes);
@@ -105,7 +120,7 @@ app.use("/api/account", accountRoutes);
 // Debate Chat Routes (secured)
 app.use("/api/chats", verifyAuth, chatRoutes);
 
-// Premium Routes (with live socket updates)
+// Premium Routes
 app.use("/api/premium", premiumRoutes);
 
 // ===== Simple health check =====
@@ -131,9 +146,7 @@ cron.schedule("*/10 * * * *", async () => {
 cron.schedule(CRON_SCHEDULE, async () => {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
-      .toISOString()
-      .slice(0, 10);
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
     console.log(`[CRON] Running daily rotation for ${today}`);
 

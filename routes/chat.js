@@ -3,7 +3,6 @@ const router = express.Router();
 const { admin, db } = require("../db");
 const bannedWords = require("../utils/bannedWords");
 
-// ===== Helper function to detect banned words =====
 function containsBannedWord(text) {
   return bannedWords.some((word) =>
     text.toLowerCase().includes(word.toLowerCase())
@@ -23,19 +22,16 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ error: "Missing fields." });
     }
 
-    // Fetch sender’s display name
     const fromUserSnap = await db.collection("users").doc(fromUid).get();
     const fromDisplayName = fromUserSnap.exists
       ? fromUserSnap.data().displayName || "Unknown"
       : "Unknown";
 
-    // Fetch recipient’s display name
     const toUserSnap = await db.collection("users").doc(toUid).get();
     const toDisplayName = toUserSnap.exists
       ? toUserSnap.data().displayName || "Unknown"
       : "Unknown";
 
-    // Prevent duplicate pending requests
     const existing = await db
       .collection("chatRequests")
       .where("fromUid", "==", fromUid)
@@ -47,7 +43,7 @@ router.post("/request", async (req, res) => {
       return res.status(400).json({ error: "Request already sent." });
     }
 
-    // ✅ Save to chatRequests (main request collection)
+    // Single write to chatRequests — includes seen/badge fields so debateRequests is not needed
     const ref = db.collection("chatRequests").doc();
     const data = {
       id: ref.id,
@@ -58,22 +54,12 @@ router.post("/request", async (req, res) => {
       topic,
       commentText: commentText || "",
       status: "pending",
+      seen: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await ref.set(data);
 
-    // ✅ ALSO save to debateRequests (for badge tracking)
-    await db.collection("debateRequests").add({
-      toUid,
-      fromUid,
-      topic,
-      seen: false,
-      status: "pending",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
-    // 🔥 Notify target via socket (for both pages + red badge)
     const io = req.app.get("io");
     if (io) {
       io.to(toUid).emit("chat:request", data);
@@ -88,7 +74,7 @@ router.post("/request", async (req, res) => {
 
     res.status(201).json({ id: ref.id, message: "Request sent." });
   } catch (err) {
-    console.error("🔥 Error in POST /request:", err);
+    console.error("Error in POST /request:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -108,23 +94,18 @@ router.get("/requests", async (req, res) => {
       .orderBy("createdAt", "desc")
       .get();
 
-    const requests = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
+    const requests = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     res.json(requests);
   } catch (err) {
-    console.error("🔥 Error in GET /requests:", err);
+    console.error("Error in GET /requests:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-
-
 /**
- * ✅ POST /api/chats/mark-seen
- * Mark all debate requests for the current user as "seen"
+ * POST /api/chats/mark-seen
+ * Mark all debate requests for the current user as seen
+ * Now uses chatRequests (single collection) instead of debateRequests
  */
 router.post("/mark-seen", async (req, res) => {
   try {
@@ -132,7 +113,7 @@ router.post("/mark-seen", async (req, res) => {
     const batch = db.batch();
 
     const snap = await db
-      .collection("debateRequests")
+      .collection("chatRequests")
       .where("toUid", "==", uid)
       .where("seen", "==", false)
       .get();
@@ -144,7 +125,7 @@ router.post("/mark-seen", async (req, res) => {
     await batch.commit();
     res.json({ message: "All requests marked as seen." });
   } catch (err) {
-    console.error("🔥 Error in POST /mark-seen:", err);
+    console.error("Error in POST /mark-seen:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -172,17 +153,15 @@ router.post("/respond", async (req, res) => {
     const io = req.app.get("io");
 
     if (action === "decline") {
-      await ref.delete(); // ✅ delete declined requests
+      await ref.delete();
       if (io) io.to(data.fromUid).emit("chat:declined", { requestId });
       return res.json({ message: "Request declined and deleted." });
     }
 
     if (action === "accept") {
-      // ✅ Update request with accepted + expiry
-      const expiresAt = Date.now() + 48 * 60 * 60 * 1000; // 48h from now
+      const expiresAt = Date.now() + 48 * 60 * 60 * 1000;
       await ref.update({ status: "accepted", expiresAt });
 
-      // ✅ Create chat room
       const chatRef = db.collection("chats").doc();
       await chatRef.set({
         id: chatRef.id,
@@ -194,7 +173,6 @@ router.post("/respond", async (req, res) => {
         expiresAt,
       });
 
-      // ✅ Notify both users
       if (io) {
         io.to(data.fromUid).emit("chat:accepted", {
           chatId: chatRef.id,
@@ -210,23 +188,18 @@ router.post("/respond", async (req, res) => {
         });
       }
 
-      return res.json({
-        message: "Request accepted.",
-        chatId: chatRef.id,
-        expiresAt,
-      });
+      return res.json({ message: "Request accepted.", chatId: chatRef.id, expiresAt });
     }
 
     res.status(400).json({ error: "Invalid action." });
   } catch (err) {
-    console.error("🔥 Error in POST /respond:", err);
+    console.error("Error in POST /respond:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /**
  * POST /api/chats/:chatId/messages
- * Send a message
  */
 router.post("/:chatId/messages", async (req, res) => {
   try {
@@ -243,11 +216,7 @@ router.post("/:chatId/messages", async (req, res) => {
       });
     }
 
-    const msgRef = db
-      .collection("chats")
-      .doc(chatId)
-      .collection("messages")
-      .doc();
+    const msgRef = db.collection("chats").doc(chatId).collection("messages").doc();
     const msgData = {
       id: msgRef.id,
       text: text.trim(),
@@ -259,14 +228,13 @@ router.post("/:chatId/messages", async (req, res) => {
     req.io.to(chatId).emit("chat:message", msgData);
     res.status(201).json(msgData);
   } catch (err) {
-    console.error("🔥 Error in POST /:chatId/messages:", err);
+    console.error("Error in POST /:chatId/messages:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
 /**
  * GET /api/chats/:chatId/messages
- * Fetch chat messages
  */
 router.get("/:chatId/messages", async (req, res) => {
   try {
@@ -281,12 +249,12 @@ router.get("/:chatId/messages", async (req, res) => {
     const messages = snap.docs.map((d) => d.data());
     res.json(messages);
   } catch (err) {
-    console.error("🔥 Error in GET /:chatId/messages:", err);
+    console.error("Error in GET /:chatId/messages:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// 🧹 Auto-clean expired chats every 12h
+// Auto-clean expired chats every 12h
 setInterval(async () => {
   try {
     const now = Date.now();
@@ -294,35 +262,30 @@ setInterval(async () => {
     for (const doc of snap.docs) {
       await doc.ref.delete();
     }
-    console.log(`🧹 Deleted ${snap.size} expired chats`);
+    console.log(`Deleted ${snap.size} expired chats`);
   } catch (err) {
-    console.error("🔥 Error cleaning expired chats:", err);
+    console.error("Error cleaning expired chats:", err);
   }
 }, 12 * 60 * 60 * 1000);
+
 /**
  * GET /api/chats/sent
- * Fetch all debate requests SENT by the logged-in user
  */
 router.get("/sent", async (req, res) => {
   try {
     const uid = req.user.uid;
     if (!uid) return res.status(400).json({ error: "Missing user UID" });
 
-    // ✅ Query for requests SENT by this user
     const snap = await db
       .collection("chatRequests")
       .where("fromUid", "==", uid)
       .orderBy("createdAt", "desc")
       .get();
 
-    const requests = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
-    }));
-
+    const requests = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     res.json(requests);
   } catch (err) {
-    console.error("🔥 Error in GET /sent:", err);
+    console.error("Error in GET /sent:", err);
     res.status(500).json({ error: err.message });
   }
 });
