@@ -78,21 +78,6 @@ app.use("/api/premium", premiumRoutes);
 // ===== Simple health check =====
 app.get("/health", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
-// ===== ONE-TIME ADMIN SETUP (secured with CRON_SECRET) =====
-app.post("/setup-admin", async (req, res) => {
-  const { uid, secret } = req.body;
-  if (!secret || secret !== process.env.CRON_SECRET) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  if (!uid) return res.status(400).json({ error: "uid required" });
-  try {
-    await admin.auth().setCustomUserClaims(uid, { admin: true });
-    res.json({ ok: true, message: `Admin claim set for ${uid}` });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ===== CRON CONFIG =====
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || "59 23 * * *";
 const BACKEND_URL = process.env.BACKEND_URL || "https://footy-backend-yka8.onrender.com";
