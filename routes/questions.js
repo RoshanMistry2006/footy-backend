@@ -27,11 +27,6 @@ function isVotingOpen(qDoc) {
 }
 
 // ---------- shared helper ----------
-
-/**
- * Compute and persist the winner for a given date.
- * Returns { winner } or throws on error.
- */
 async function computeWinner(date, io) {
   const qRef = db.collection('questions').doc(date);
   const qDoc = await qRef.get();
@@ -75,7 +70,6 @@ async function computeWinner(date, io) {
   }
 
   if (io) io.to(date).emit('winner:computed', { date, winner });
-
   return { winner, message: 'Winner computed successfully' };
 }
 
@@ -90,7 +84,7 @@ function verifyCronSecret(req, res) {
 
 // ---------- routes ----------
 
-// SHORTCUT ROUTE FOR CRON JOB (must be before :date routes!)
+// CRON shortcut (must be before :date routes)
 router.post('/today/compute-winner', async (req, res) => {
   if (!verifyCronSecret(req, res)) return;
   try {
@@ -108,12 +102,50 @@ router.get('/today', async (req, res) => {
   try {
     const today = todayStr();
     const doc = await db.collection('questions').doc(today).get();
-    if (!doc.exists)
-      return res.status(404).json({ error: 'No question found for today.' });
+    if (!doc.exists) return res.status(404).json({ error: 'No question found for today.' });
     res.json(doc.data());
   } catch (err) {
     console.error('Error fetching question:', err);
     res.status(500).json({ error: 'Error fetching question.' });
+  }
+});
+
+// GET /api/questions — Admin: list all questions (must be before /:date)
+router.get('/', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const snap = await db.collection('questions').orderBy('__name__', 'desc').limit(30).get();
+    const questions = snap.docs.map((d) => ({ date: d.id, ...d.data() }));
+    res.json(questions);
+  } catch (err) {
+    console.error('Error listing questions:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/questions — Admin: create a question for a specific date
+router.post('/', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const { date, text } = req.body;
+    if (!date || !text || !text.trim())
+      return res.status(400).json({ error: 'date and text are required.' });
+    if (!DATE_RE.test(date))
+      return res.status(400).json({ error: 'Invalid date format (YYYY-MM-DD)' });
+
+    const ref = db.collection('questions').doc(date);
+    const existing = await ref.get();
+    if (existing.exists)
+      return res.status(409).json({ error: `Question for ${date} already exists.` });
+
+    await ref.set({
+      text: text.trim(),
+      isActive: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(201).json({ message: `Question created for ${date}`, date, text: text.trim() });
+  } catch (err) {
+    console.error('Error creating question:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -123,16 +155,36 @@ router.get('/:date', async (req, res) => {
     const { date } = req.params;
     assertDate(date);
     const doc = await db.collection('questions').doc(date).get();
-    if (!doc.exists)
-      return res.status(404).json({ error: 'No question found for this date.' });
+    if (!doc.exists) return res.status(404).json({ error: 'No question found for this date.' });
     const data = doc.data();
-    if (data.time && data.time.toDate) {
-      data.time = data.time.toDate().toISOString();
-    }
+    if (data.time && data.time.toDate) data.time = data.time.toDate().toISOString();
     res.json(data);
   } catch (err) {
     console.error('Error fetching question by date:', err);
     res.status(err.status || 500).json({ error: err.message || 'Error fetching question.' });
+  }
+});
+
+// PATCH /api/questions/:date — Admin: update question text or activate/deactivate
+router.patch('/:date', verifyAuth, requireAdmin, async (req, res) => {
+  try {
+    const { date } = req.params;
+    assertDate(date);
+    const { text, isActive } = req.body;
+
+    const ref = db.collection('questions').doc(date);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Question not found.' });
+
+    const updates = {};
+    if (text !== undefined) updates.text = text.trim();
+    if (isActive !== undefined) updates.isActive = isActive;
+
+    await ref.update(updates);
+    res.json({ message: 'Question updated.', date, ...updates });
+  } catch (err) {
+    console.error('Error updating question:', err);
+    res.status(err.status || 500).json({ error: err.message });
   }
 });
 
@@ -141,12 +193,7 @@ router.get('/:date/answers', async (req, res) => {
   try {
     const { date } = req.params;
     assertDate(date);
-    const snap = await db
-      .collection('questions')
-      .doc(date)
-      .collection('answers')
-      .orderBy('votes', 'desc')
-      .get();
+    const snap = await db.collection('questions').doc(date).collection('answers').orderBy('votes', 'desc').get();
     const answers = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     res.json({ count: answers.length, answers });
   } catch (err) {
@@ -164,29 +211,19 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
     const uid = req.user?.uid || null;
     const displayName = req.user?.displayName || 'Anonymous';
 
-    if (!text || !text.trim())
-      return res.status(400).json({ error: 'Answer text is required.' });
+    if (!text || !text.trim()) return res.status(400).json({ error: 'Answer text is required.' });
 
     const qRef = db.collection('questions').doc(date);
     const qDoc = await qRef.get();
-    if (!qDoc.exists)
-      return res.status(404).json({ error: 'Question not found for this date.' });
+    if (!qDoc.exists) return res.status(404).json({ error: 'Question not found for this date.' });
 
-    const answersSnap = await qRef.collection('answers')
-      .where('userId', '==', uid)
-      .limit(1)
-      .get();
-    if (!answersSnap.empty)
-      return res.status(403).json({ error: 'You have already submitted an answer for today.' });
+    const answersSnap = await qRef.collection('answers').where('userId', '==', uid).limit(1).get();
+    if (!answersSnap.empty) return res.status(403).json({ error: 'You have already submitted an answer for today.' });
 
     const aRef = qRef.collection('answers').doc();
     const newAnswer = {
-      id: aRef.id,
-      text: text.trim(),
-      userId: uid,
-      displayName,
-      votes: 0,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      id: aRef.id, text: text.trim(), userId: uid, displayName,
+      votes: 0, createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     await aRef.set(newAnswer);
@@ -200,7 +237,6 @@ router.post('/:date/answers', verifyAuth, async (req, res) => {
 
     const io = req.app.get('io');
     if (io) io.to(date).emit('answer:created', newAnswer);
-
     res.status(201).json(newAnswer);
   } catch (err) {
     console.error('Error creating answer:', err);
@@ -214,16 +250,12 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
     const { date } = req.params;
     const { text } = req.body;
     const user = req.user;
-
-    if (!text || !text.trim())
-      return res.status(400).json({ error: 'Comment text is required.' });
+    if (!text || !text.trim()) return res.status(400).json({ error: 'Comment text is required.' });
 
     const qRef = db.collection('questions').doc(date);
     const commentRef = qRef.collection('comments').doc();
     const comment = {
-      id: commentRef.id,
-      text: text.trim(),
-      userId: user.uid,
+      id: commentRef.id, text: text.trim(), userId: user.uid,
       displayName: user.displayName || 'Anonymous',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -239,10 +271,9 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
 
     const io = req.app.get('io');
     if (io) io.to(date).emit('question:commented', comment);
-
     res.status(201).json(comment);
   } catch (err) {
-    console.error('Error posting comment on daily question:', err);
+    console.error('Error posting comment:', err);
     res.status(err.status || 500).json({ error: err.message || 'Failed to post comment.' });
   }
 });
@@ -251,7 +282,6 @@ router.post('/:date/comments', verifyAuth, async (req, res) => {
 router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
   const { date, answerId } = req.params;
   const uid = req.user.uid;
-
   try {
     assertDate(date);
     let prevId = null;
@@ -290,7 +320,6 @@ router.post('/:date/answers/:answerId/vote', verifyAuth, async (req, res) => {
 
     const io = req.app.get('io');
     if (io && changed) io.to(date).emit('answer:voted', { answerId, prevAnswerId: prevId, uid });
-
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
